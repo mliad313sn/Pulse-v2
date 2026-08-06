@@ -146,29 +146,11 @@ export function SyncIcon({ className }: IconProps) {
   );
 }
 
-export function FlagIcon({ className }: IconProps) {
-  return (
-    <svg {...base(className)}>
-      <path d="M6 21V4" />
-      <path d="M6 5h11l-2.5 3.5L17 12H6" />
-    </svg>
-  );
-}
-
 export function ClockIcon({ className }: IconProps) {
   return (
     <svg {...base(className)}>
       <circle cx="12" cy="12" r="8.5" />
       <path d="M12 7.5V12l3 2" />
-    </svg>
-  );
-}
-
-export function LinkIcon({ className }: IconProps) {
-  return (
-    <svg {...base(className)}>
-      <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.3 1.3" />
-      <path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.3-1.3" />
     </svg>
   );
 }

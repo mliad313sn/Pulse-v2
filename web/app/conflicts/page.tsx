@@ -6,6 +6,8 @@ import { useMemo, useState } from "react";
 import { useApp } from "@/lib/store";
 import { fmtDateTime, titleCaseTag } from "@/lib/utils";
 import { MergeIcon } from "@/components/Icons";
+import EmptyState from "@/components/EmptyState";
+import { PageHeader } from "@/components/Headings";
 import type { ConflictEntry } from "@/lib/types";
 
 function fmtValue(v: unknown): string {
@@ -126,20 +128,19 @@ export default function ConflictsPage() {
 
   return (
     <div className="mx-auto max-w-3xl">
-      <div className="mb-6">
-        <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-          <MergeIcon className="h-6 w-6 text-amber-500" />
-          Manual merge
-        </h1>
-        <p className="mt-1 text-slate-500 dark:text-slate-400">
-          These offline edits collided with newer server changes. Pick the value to keep for each field.
-        </p>
-      </div>
+      <PageHeader
+        titleClassName="flex items-center gap-2"
+        title={
+          <>
+            <MergeIcon className="h-6 w-6 text-amber-500" />
+            Manual merge
+          </>
+        }
+        subtitle="These offline edits collided with newer server changes. Pick the value to keep for each field."
+      />
 
       {conflicts.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-slate-300 p-10 text-center text-slate-500 dark:border-slate-600 dark:text-slate-400">
-          Nothing to merge — all changes are in sync.
-        </div>
+        <EmptyState>Nothing to merge — all changes are in sync.</EmptyState>
       ) : (
         <div className="space-y-4">
           {conflicts.map((entry) => (

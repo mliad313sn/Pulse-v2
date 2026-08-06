@@ -2,14 +2,16 @@
 
 // Project detail — Kanban board (drag-and-drop + touch fallback), roadblocks, audit peek.
 
-import { use, useMemo, useState } from "react";
+import { use, useMemo } from "react";
 import Link from "next/link";
 import { useApp } from "@/lib/store";
 import Kanban from "@/components/Kanban";
-import RoadblockSheet, { type RoadblockTarget } from "@/components/RoadblockSheet";
 import AuditPeek from "@/components/AuditPeek";
-import { ProjectStatusBadge, SecurityGateBadge, SeverityBadge, TagChip } from "@/components/Badges";
-import { AlertIcon, PlusIcon } from "@/components/Icons";
+import EmptyState from "@/components/EmptyState";
+import { PageHeader } from "@/components/Headings";
+import LogRoadblockButton from "@/components/LogRoadblockButton";
+import { CountPill, Pill, ProjectStatusBadge, SecurityGateBadge, SeverityBadge, TagChip } from "@/components/Badges";
+import { PlusIcon } from "@/components/Icons";
 import { SkeletonBoard } from "@/components/Skeleton";
 import { divisionMeta, fmtDateTime, cn } from "@/lib/utils";
 import type { RoadblockStatus } from "@/lib/types";
@@ -22,8 +24,7 @@ const RB_NEXT: Record<RoadblockStatus, { label: string; next: RoadblockStatus } 
 
 export default function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const { projects, roadblocks, users, updateRoadblock, bootLoading } = useApp();
-  const [roadblockTarget, setRoadblockTarget] = useState<RoadblockTarget | null>(null);
+  const { projects, roadblocks, users, updateRoadblock, bootLoading, openRoadblock } = useApp();
 
   const project = projects.find((p) => p.id === id);
   const projectRoadblocks = useMemo(
@@ -40,7 +41,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         {bootLoading ? (
           <SkeletonBoard />
         ) : (
-          <div className="rounded-2xl border border-dashed border-slate-300 p-10 text-center dark:border-slate-600">
+          <EmptyState size="bare">
             <p className="font-medium">Project not found in the local cache.</p>
             <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
               It may not have synced yet — reconnect or head back to the dashboard.
@@ -51,7 +52,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             >
               Back to dashboard
             </Link>
-          </div>
+          </EmptyState>
         )}
       </div>
     );
@@ -63,27 +64,27 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   return (
     <div className="space-y-8">
       <header>
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="min-w-0">
-            <h1 className="flex items-center gap-2.5 text-2xl font-bold tracking-tight">
+        <PageHeader
+          className="items-start"
+          innerClassName="min-w-0"
+          titleClassName="flex items-center gap-2.5"
+          title={
+            <>
               <span className={cn("h-3 w-3 shrink-0 rounded-full", div.accent)} title={div.label} />
               {project.name}
-            </h1>
-            <p className="mt-1 text-slate-500 dark:text-slate-400">
+            </>
+          }
+          subtitle={
+            <>
               {div.label}
               {project.site ? ` · ${project.site}` : ""}
               {project.description ? ` — ${project.description}` : ""}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setRoadblockTarget({ projectId: project.id })}
-            className="flex min-h-[44px] items-center gap-2 rounded-xl bg-rose-600 px-4 text-sm font-semibold text-white transition hover:bg-rose-500"
-          >
-            <AlertIcon className="h-4 w-4" />
-            Log Roadblock
-          </button>
-        </div>
+            </>
+          }
+          action={
+            <LogRoadblockButton variant="solid" onClick={() => openRoadblock({ projectId: project.id })} />
+          }
+        />
         <div className="mt-3 flex flex-wrap items-center gap-1.5">
           <ProjectStatusBadge status={project.overallStatus} />
           <SecurityGateBadge status={project.securityGateStatus} />
@@ -95,21 +96,17 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         </div>
       </header>
 
-      <Kanban projectId={project.id} onRoadblock={setRoadblockTarget} />
+      <Kanban projectId={project.id} />
 
       <section>
         <div className="mb-3 flex items-center justify-between">
           <h2 className="flex items-center gap-2 text-lg font-semibold">
             Roadblocks
-            {openRbs.length > 0 && (
-              <span className="rounded-full bg-rose-100 px-2.5 py-0.5 text-xs font-bold text-rose-700 dark:bg-rose-900/50 dark:text-rose-300">
-                {openRbs.length} open
-              </span>
-            )}
+            {openRbs.length > 0 && <CountPill>{openRbs.length} open</CountPill>}
           </h2>
           <button
             type="button"
-            onClick={() => setRoadblockTarget({ projectId: project.id })}
+            onClick={() => openRoadblock({ projectId: project.id })}
             className="flex min-h-[44px] items-center gap-1.5 rounded-xl px-3 text-sm font-medium text-rose-600 transition hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-900/30"
           >
             <PlusIcon className="h-4 w-4" />
@@ -117,9 +114,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           </button>
         </div>
         {projectRoadblocks.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500 dark:border-slate-600 dark:text-slate-400">
-            No roadblocks logged for this project.
-          </div>
+          <EmptyState size="sm">No roadblocks logged for this project.</EmptyState>
         ) : (
           <div className="space-y-3">
             {projectRoadblocks.map((rb) => {
@@ -137,9 +132,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
                     <p className="min-w-0 flex-1 leading-snug">{rb.description}</p>
                     <div className="flex items-center gap-2">
                       <SeverityBadge severity={rb.severity} />
-                      <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium capitalize text-slate-600 dark:bg-slate-700 dark:text-slate-300">
+                      <Pill className="bg-slate-100 capitalize text-slate-600 dark:bg-slate-700 dark:text-slate-300">
                         {rb.status}
-                      </span>
+                      </Pill>
                     </div>
                   </div>
                   <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
@@ -165,8 +160,6 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       </section>
 
       <AuditPeek entityId={project.id} />
-
-      <RoadblockSheet target={roadblockTarget} onClose={() => setRoadblockTarget(null)} />
     </div>
   );
 }

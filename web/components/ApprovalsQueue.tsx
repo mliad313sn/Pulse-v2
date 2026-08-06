@@ -4,9 +4,11 @@ import { useState } from "react";
 import Link from "next/link";
 import { useApp } from "@/lib/store";
 import { titleCaseTag, fmtDateTime } from "@/lib/utils";
-import { TagChip } from "./Badges";
+import { CountPill, TagChip } from "./Badges";
 import { CheckIcon, ShieldIcon, XIcon } from "./Icons";
 import { SkeletonList } from "./Skeleton";
+import EmptyState from "./EmptyState";
+import { SectionHeader } from "./Headings";
 
 export default function ApprovalsQueue({ canDecide }: { canDecide: boolean }) {
   const { approvals, projects, tasks, decideApproval, online, bootLoading, users } = useApp();
@@ -33,15 +35,11 @@ export default function ApprovalsQueue({ canDecide }: { canDecide: boolean }) {
         <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold">
           <ShieldIcon className="h-5 w-5 text-rose-500" />
           Pending approvals
-          <span className="rounded-full bg-rose-100 px-2.5 py-0.5 text-xs font-bold text-rose-700 dark:bg-rose-900/50 dark:text-rose-300">
-            {pending.length}
-          </span>
+          <CountPill>{pending.length}</CountPill>
         </h2>
 
         {pending.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-slate-300 p-8 text-center text-slate-500 dark:border-slate-600 dark:text-slate-400">
-            Queue is clear — no security approvals waiting.
-          </div>
+          <EmptyState size="md">Queue is clear — no security approvals waiting.</EmptyState>
         ) : (
           <div className="space-y-3">
             {pending.map((a) => {
@@ -109,9 +107,7 @@ export default function ApprovalsQueue({ canDecide }: { canDecide: boolean }) {
 
       {reviewed.length > 0 && (
         <section>
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-            Recently reviewed
-          </h2>
+          <SectionHeader>Recently reviewed</SectionHeader>
           <div className="space-y-2">
             {reviewed.map((a) => {
               const project = projects.find((p) => p.id === a.projectId);

@@ -6,6 +6,7 @@ import { AppProvider, useApp } from "@/lib/store";
 import Header from "./Header";
 import SWRegister from "./SWRegister";
 import PersonaPicker from "./PersonaPicker";
+import RoadblockSheet from "./RoadblockSheet";
 import { Skeleton, SkeletonList } from "./Skeleton";
 
 function Shell({ children }: { children: ReactNode }) {
@@ -28,6 +29,7 @@ function Shell({ children }: { children: ReactNode }) {
     <>
       <Header />
       <main className="mx-auto max-w-6xl px-4 pb-24 pt-6">{children}</main>
+      <RoadblockSheet />
     </>
   );
 }

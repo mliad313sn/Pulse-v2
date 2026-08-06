@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useMemo } from "react";
 import { useApp } from "@/lib/store";
 import { cn, divisionMeta } from "@/lib/utils";
 import type { Project } from "@/lib/types";
@@ -10,9 +11,17 @@ import { ChevronRightIcon } from "./Icons";
 export default function ProjectCard({ project, showTags = false }: { project: Project; showTags?: boolean }) {
   const { tasks } = useApp();
   const div = divisionMeta(project.division);
-  const projectTasks = tasks.filter((t) => t.projectId === project.id);
-  const done = projectTasks.filter((t) => t.status === "done").length;
-  const pct = projectTasks.length ? Math.round((done / projectTasks.length) * 100) : 0;
+  const { total, done } = useMemo(() => {
+    let total = 0;
+    let done = 0;
+    for (const t of tasks) {
+      if (t.projectId !== project.id) continue;
+      total += 1;
+      if (t.status === "done") done += 1;
+    }
+    return { total, done };
+  }, [tasks, project.id]);
+  const pct = total ? Math.round((done / total) * 100) : 0;
 
   return (
     <Link
@@ -41,11 +50,11 @@ export default function ProjectCard({ project, showTags = false }: { project: Pr
         {showTags && (project.riskTags ?? []).map((t) => <TagChip key={t} tag={t} tone="rose" />)}
       </div>
 
-      {projectTasks.length > 0 && (
+      {total > 0 && (
         <div className="mt-4">
           <div className="mb-1 flex justify-between text-xs text-slate-500 dark:text-slate-400">
             <span>
-              {done}/{projectTasks.length} tasks done
+              {done}/{total} tasks done
             </span>
             <span>{pct}%</span>
           </div>

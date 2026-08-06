@@ -4,6 +4,8 @@ import { useApp } from "@/lib/store";
 import { cn, divisionMeta, initials } from "@/lib/utils";
 import { SkeletonCard } from "./Skeleton";
 import { CloudOffIcon } from "./Icons";
+import EmptyState from "./EmptyState";
+import { SectionHeader } from "./Headings";
 import type { User } from "@/lib/types";
 
 export default function PersonaPicker() {
@@ -36,7 +38,7 @@ export default function PersonaPicker() {
       )}
 
       {!usersLoading && users.length === 0 && (
-        <div className="rounded-2xl border border-dashed border-slate-300 p-10 text-center dark:border-slate-600">
+        <EmptyState size="bare">
           <CloudOffIcon className="mx-auto mb-3 h-8 w-8 text-slate-400" />
           <p className="font-medium">
             {online ? "The API server is not reachable yet." : "You are offline and no user directory is cached."}
@@ -53,7 +55,7 @@ export default function PersonaPicker() {
           >
             Retry
           </button>
-        </div>
+        </EmptyState>
       )}
 
       <div className="space-y-8">
@@ -61,10 +63,10 @@ export default function PersonaPicker() {
           const meta = divisionMeta(division);
           return (
             <section key={division}>
-              <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              <SectionHeader className="flex items-center gap-2">
                 <span className={cn("h-2 w-2 rounded-full", meta.accent)} />
                 {meta.label}
-              </h2>
+              </SectionHeader>
               <div className="grid gap-3 sm:grid-cols-2">
                 {grouped[division].map((u) => (
                   <button

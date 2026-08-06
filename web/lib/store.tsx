@@ -367,11 +367,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(
     async (user: User) => {
-      try {
-        localStorage.setItem(USER_ID_KEY, user.id);
-      } catch {
-        /* ignore */
-      }
+      safeLocalSet(USER_ID_KEY, user.id);
       await idb.setMeta("currentUser", user);
       patch({ user, bootLoading: true });
       await refresh();
@@ -381,11 +377,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(() => {
-    try {
-      localStorage.removeItem(USER_ID_KEY);
-    } catch {
-      /* ignore */
-    }
+    safeLocalRemove(USER_ID_KEY);
     void idb.delMeta("currentUser");
     patch({ user: null });
     void loadUsers();
@@ -420,7 +412,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!stateRef.current.online) return queueIt();
 
       try {
-        const res = await api<unknown>(`/api/${ENTITY_TO_PATH[entity]}/${entityId}`, {
+        const res = await api<unknown>(`/api/${ENTITY_TO_LIST[entity]}/${entityId}`, {
           method: "PATCH",
           body: { ...fields, version: baseVersion },
         });
@@ -459,17 +451,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [setEntity, toast, friendlyError, refreshOutboxCount],
   );
 
-  const updateTask = useCallback(
-    (taskId: string, fields: Partial<Task>) => mutateEntity("task", taskId, fields as Record<string, unknown>),
-    [mutateEntity],
-  );
-
   const moveTask = useCallback(
     async (taskId: string, status: Task["status"]): Promise<MutateOutcome> => {
       const task = stateRef.current.tasks.find((t) => t.id === taskId);
       if (!task) return { ok: false, code: "NOT_FOUND" };
       if (task.status === status) return { ok: true };
-      if (task.locked && (status === "in_progress" || status === "done")) {
+      if (isGatedTransition(task, status)) {
         toast(lockedMessage(task), "warning");
         return { ok: false, code: "LOCKED" };
       }
@@ -659,19 +646,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           idb.getMeta<string>("refreshedAt"),
         ]);
       if (cancelled) return;
-      let user: User | null = null;
-      let storedId: string | null = null;
-      try {
-        storedId = localStorage.getItem(USER_ID_KEY);
-      } catch {
-        /* ignore */
-      }
-      if (storedId) {
-        user = (cachedUser && cachedUser.id === storedId ? cachedUser : null) ??
-          users.find((u) => u.id === storedId) ??
-          null;
-        if (!user && cachedUser) user = cachedUser;
-      }
+      const storedId = safeLocalGet(USER_ID_KEY);
+      const user: User | null = storedId
+        ? users.find((u) => u.id === storedId) ?? cachedUser ?? null
+        : null;
       patch({
         ready: true,
         online,
@@ -727,31 +705,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ...state,
       login,
       logout,
-      refresh,
-      flush,
       loadUsers,
-      updateTask,
       moveTask,
       updateRoadblock,
       createRoadblock,
       decideApproval,
       resolveConflict,
+      lockedReason,
       lockedMessage,
+      openRoadblock,
+      closeRoadblock,
     }),
     [
       state,
       login,
       logout,
-      refresh,
-      flush,
       loadUsers,
-      updateTask,
       moveTask,
       updateRoadblock,
       createRoadblock,
       decideApproval,
       resolveConflict,
+      lockedReason,
       lockedMessage,
+      openRoadblock,
+      closeRoadblock,
     ],
   );
 

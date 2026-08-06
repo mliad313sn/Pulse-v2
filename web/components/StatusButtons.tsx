@@ -1,7 +1,7 @@
 "use client";
 
 import { useApp } from "@/lib/store";
-import { cn, STATUS_META, TASK_STATUSES } from "@/lib/utils";
+import { cn, isGatedTransition, STATUS_META, TASK_STATUSES } from "@/lib/utils";
 import type { Task, TaskStatus } from "@/lib/types";
 import { LockIcon } from "./Icons";
 
@@ -21,7 +21,7 @@ export default function StatusButtons({ task, onDone }: { task: Task; onDone?: (
       {TASK_STATUSES.map((status) => {
         const meta = STATUS_META[status];
         const isCurrent = task.status === status;
-        const gated = Boolean(task.locked) && (status === "in_progress" || status === "done");
+        const gated = isGatedTransition(task, status);
         return (
           <button
             key={status}

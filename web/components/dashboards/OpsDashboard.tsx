@@ -7,13 +7,15 @@
 import { useMemo, useState } from "react";
 import { useApp } from "@/lib/store";
 import TaskCard from "@/components/TaskCard";
-import { AlertIcon, ChevronDownIcon } from "@/components/Icons";
+import LogRoadblockButton from "@/components/LogRoadblockButton";
+import EmptyState from "@/components/EmptyState";
+import { PageHeader } from "@/components/Headings";
+import { ChevronDownIcon } from "@/components/Icons";
 import { SkeletonList } from "@/components/Skeleton";
-import type { RoadblockTarget } from "@/components/RoadblockSheet";
 import { slaState } from "@/lib/utils";
 
-export default function OpsDashboard({ onRoadblock }: { onRoadblock: (t: RoadblockTarget) => void }) {
-  const { user, tasks, projects, bootLoading } = useApp();
+export default function OpsDashboard() {
+  const { user, tasks, projects, bootLoading, openRoadblock } = useApp();
   const [showDone, setShowDone] = useState(false);
 
   const myTasks = useMemo(() => {
@@ -33,33 +35,27 @@ export default function OpsDashboard({ onRoadblock }: { onRoadblock: (t: Roadblo
 
   return (
     <div className="mx-auto max-w-xl">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">My site tasks</h1>
-        <p className="mt-1 text-slate-500 dark:text-slate-400">
-          Zen Mode{user?.site ? ` · ${user.site}` : ""} · {open.length} open
-        </p>
-      </div>
+      <PageHeader
+        title="My site tasks"
+        subtitle={`Zen Mode${user?.site ? ` · ${user.site}` : ""} · ${open.length} open`}
+      />
 
-      <button
-        type="button"
+      <LogRoadblockButton
+        variant="solid"
+        size="lg"
+        className="mb-6"
         disabled={!defaultProject}
-        onClick={() => defaultProject && onRoadblock({ projectId: defaultProject.id })}
-        className="mb-6 flex min-h-[56px] w-full items-center justify-center gap-2.5 rounded-2xl bg-rose-600 text-base font-semibold text-white shadow-lg shadow-rose-600/20 transition hover:bg-rose-500 disabled:opacity-50"
-      >
-        <AlertIcon className="h-5 w-5" />
-        Log Roadblock
-      </button>
+        onClick={() => defaultProject && openRoadblock({ projectId: defaultProject.id })}
+      />
 
       {bootLoading && myTasks.length === 0 ? (
         <SkeletonList count={4} />
       ) : open.length === 0 && done.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-slate-300 p-10 text-center text-slate-500 dark:border-slate-600 dark:text-slate-400">
-          No tasks for your site yet.
-        </div>
+        <EmptyState>No tasks for your site yet.</EmptyState>
       ) : (
         <div className="space-y-3">
           {open.map((task) => (
-            <TaskCard key={task.id} task={task} mode="zen" onRoadblock={onRoadblock} />
+            <TaskCard key={task.id} task={task} mode="zen" />
           ))}
 
           {done.length > 0 && (
@@ -75,7 +71,7 @@ export default function OpsDashboard({ onRoadblock }: { onRoadblock: (t: Roadblo
               {showDone && (
                 <div className="mt-3 space-y-3">
                   {done.map((task) => (
-                    <TaskCard key={task.id} task={task} mode="zen" onRoadblock={onRoadblock} />
+                    <TaskCard key={task.id} task={task} mode="zen" />
                   ))}
                 </div>
               )}

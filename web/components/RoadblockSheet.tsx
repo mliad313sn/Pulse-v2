@@ -4,26 +4,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "@/lib/store";
 import { useToast } from "./Toast";
 import { cn, SEVERITIES, SEVERITY_META } from "@/lib/utils";
-import type { RoadblockSeverity, Task } from "@/lib/types";
+import type { RoadblockSeverity } from "@/lib/types";
 import { XIcon } from "./Icons";
 
-export interface RoadblockTarget {
-  projectId: string;
-  task?: Task | null;
-}
-
-interface Props {
-  target: RoadblockTarget | null;
-  onClose: () => void;
-}
-
 /**
- * SC3: "Log Roadblock" bottom sheet.
+ * SC3: "Log Roadblock" bottom sheet — rendered once in the app shell.
+ * Any component opens it via openRoadblock() from useApp().
  * Opening it is interaction 1, the description arrives prefilled + focused,
  * severity chips are one optional tap, Save is the final tap — 2-3 interactions total.
  */
-export default function RoadblockSheet({ target, onClose }: Props) {
-  const { createRoadblock, projects, online } = useApp();
+export default function RoadblockSheet() {
+  const { createRoadblock, projects, online, roadblockTarget: target, closeRoadblock: onClose } = useApp();
   const { push: toast } = useToast();
   const [severity, setSeverity] = useState<RoadblockSeverity>("medium");
   const [description, setDescription] = useState("");

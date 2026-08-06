@@ -9,10 +9,23 @@ import { apiBlob } from "@/lib/api";
 import { cn, divisionMeta, DIVISION_META, PROJECT_STATUS_META } from "@/lib/utils";
 import type { Project, ProjectStatus } from "@/lib/types";
 import ProjectCard from "@/components/ProjectCard";
+import { Pill } from "@/components/Badges";
+import { PageHeader, SectionHeader } from "@/components/Headings";
 import { DownloadIcon } from "@/components/Icons";
 import { Skeleton, SkeletonCard } from "@/components/Skeleton";
 
 const STATUS_ORDER: ProjectStatus[] = ["active", "at_risk", "on_hold", "draft", "complete"];
+
+// Rows shown even when a division has no projects yet.
+const ALWAYS_SHOWN = ["ops", "infra", "infosec"];
+
+interface MatrixRow {
+  division: string;
+  projects: Project[];
+  byStatus: Record<ProjectStatus, number>;
+  blockedTasks: number;
+  openRoadblocks: number;
+}
 
 function healthTone(byStatus: Record<ProjectStatus, number>): string {
   if (byStatus.at_risk > 0) return "bg-rose-500";
@@ -28,19 +41,40 @@ export default function ManagementDashboard() {
 
   const matrix = useMemo(() => {
     const divisions = Object.keys(DIVISION_META);
+    const rows = new Map<string, MatrixRow>(
+      divisions.map((division) => [
+        division,
+        {
+          division,
+          projects: [],
+          byStatus: Object.fromEntries(STATUS_ORDER.map((s) => [s, 0])) as Record<ProjectStatus, number>,
+          blockedTasks: 0,
+          openRoadblocks: 0,
+        },
+      ]),
+    );
+    // Single pass per collection, joined through a projectId -> division map.
+    const projectDivision = new Map<string, string>();
+    for (const p of projects) {
+      projectDivision.set(p.id, p.division);
+      const row = rows.get(p.division);
+      if (!row) continue;
+      row.projects.push(p);
+      row.byStatus[p.overallStatus] += 1;
+    }
+    for (const t of tasks) {
+      if (t.status !== "blocked") continue;
+      const row = rows.get(projectDivision.get(t.projectId) ?? "");
+      if (row) row.blockedTasks += 1;
+    }
+    for (const r of roadblocks) {
+      if (r.status === "resolved") continue;
+      const row = rows.get(projectDivision.get(r.projectId) ?? "");
+      if (row) row.openRoadblocks += 1;
+    }
     return divisions
-      .map((division) => {
-        const divProjects = projects.filter((p) => p.division === division);
-        const byStatus = STATUS_ORDER.reduce(
-          (acc, s) => ({ ...acc, [s]: divProjects.filter((p) => p.overallStatus === s).length }),
-          {} as Record<ProjectStatus, number>,
-        );
-        const projectIds = new Set(divProjects.map((p) => p.id));
-        const blockedTasks = tasks.filter((t) => projectIds.has(t.projectId) && t.status === "blocked").length;
-        const openRoadblocks = roadblocks.filter((r) => projectIds.has(r.projectId) && r.status !== "resolved").length;
-        return { division, projects: divProjects, byStatus, blockedTasks, openRoadblocks };
-      })
-      .filter((row) => row.projects.length > 0 || ["ops", "infra", "infosec"].includes(row.division));
+      .map((division) => rows.get(division)!)
+      .filter((row) => row.projects.length > 0 || ALWAYS_SHOWN.includes(row.division));
   }, [projects, tasks, roadblocks]);
 
   const exportDeck = async (format: "pptx" | "pdf") => {
@@ -69,35 +103,38 @@ export default function ManagementDashboard() {
 
   return (
     <div>
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Portfolio health</h1>
-          <p className="mt-1 text-slate-500 dark:text-slate-400">
+      <PageHeader
+        className="mb-6 items-end"
+        title="Portfolio health"
+        subtitle={
+          <>
             All divisions · {projects.length} projects · {roadblocks.filter((r) => r.status !== "resolved").length} open
             roadblocks
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            disabled={downloading !== null}
-            onClick={() => void exportDeck("pptx")}
-            className="flex min-h-[44px] items-center gap-2 rounded-xl bg-indigo-600 px-4 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:opacity-50"
-          >
-            <DownloadIcon className="h-4 w-4" />
-            {downloading === "pptx" ? "Building…" : "Executive Deck (PPTX)"}
-          </button>
-          <button
-            type="button"
-            disabled={downloading !== null}
-            onClick={() => void exportDeck("pdf")}
-            className="flex min-h-[44px] items-center gap-2 rounded-xl border border-indigo-300 px-4 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50 dark:border-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-950/40"
-          >
-            <DownloadIcon className="h-4 w-4" />
-            {downloading === "pdf" ? "Building…" : "PDF"}
-          </button>
-        </div>
-      </div>
+          </>
+        }
+        action={
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={downloading !== null}
+              onClick={() => void exportDeck("pptx")}
+              className="flex min-h-[44px] items-center gap-2 rounded-xl bg-indigo-600 px-4 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:opacity-50"
+            >
+              <DownloadIcon className="h-4 w-4" />
+              {downloading === "pptx" ? "Building…" : "Executive Deck (PPTX)"}
+            </button>
+            <button
+              type="button"
+              disabled={downloading !== null}
+              onClick={() => void exportDeck("pdf")}
+              className="flex min-h-[44px] items-center gap-2 rounded-xl border border-indigo-300 px-4 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50 dark:border-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-950/40"
+            >
+              <DownloadIcon className="h-4 w-4" />
+              {downloading === "pdf" ? "Building…" : "PDF"}
+            </button>
+          </div>
+        }
+      />
 
       {bootLoading && projects.length === 0 ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -126,15 +163,9 @@ export default function ManagementDashboard() {
                 </div>
                 <div className="mt-4 flex flex-wrap gap-1.5">
                   {STATUS_ORDER.filter((s) => row.byStatus[s] > 0).map((s) => (
-                    <span
-                      key={s}
-                      className={cn(
-                        "inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium",
-                        PROJECT_STATUS_META[s].badge,
-                      )}
-                    >
+                    <Pill key={s} className={cn("gap-1", PROJECT_STATUS_META[s].badge)}>
                       {row.byStatus[s]} {PROJECT_STATUS_META[s].label.toLowerCase()}
-                    </span>
+                    </Pill>
                   ))}
                   {row.projects.length === 0 && (
                     <span className="text-xs text-slate-400">No projects yet</span>
@@ -151,9 +182,7 @@ export default function ManagementDashboard() {
       )}
 
       <section className="mt-10">
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-          All projects
-        </h2>
+        <SectionHeader>All projects</SectionHeader>
         {bootLoading && projects.length === 0 ? (
           <Skeleton className="h-24 w-full" />
         ) : (

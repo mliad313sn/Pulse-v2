@@ -2,92 +2,12 @@
 
 import { useMemo, useState } from "react";
 import { useApp } from "@/lib/store";
-import { cn, STATUS_META, TASK_STATUSES, fmtDate, relativeDue, slaClass, slaState } from "@/lib/utils";
+import { cn, STATUS_META, TASK_STATUSES } from "@/lib/utils";
 import type { Task, TaskStatus } from "@/lib/types";
-import { LockBadge } from "./Badges";
-import StatusButtons from "./StatusButtons";
-import { AlertIcon, ClockIcon } from "./Icons";
-import type { RoadblockTarget } from "./RoadblockSheet";
+import TaskCard from "./TaskCard";
+import EmptyState from "./EmptyState";
 
-interface Props {
-  projectId: string;
-  onRoadblock: (target: RoadblockTarget) => void;
-}
-
-function KanbanCard({
-  task,
-  selected,
-  onSelect,
-  onRoadblock,
-}: {
-  task: Task;
-  selected: boolean;
-  onSelect: () => void;
-  onRoadblock: (target: RoadblockTarget) => void;
-}) {
-  const { lockedMessage } = useApp();
-  const [expanded, setExpanded] = useState(false);
-  const locked = Boolean(task.locked);
-  const sla = slaState(task);
-
-  return (
-    <div
-      draggable
-      onDragStart={(e) => {
-        e.dataTransfer.setData("text/plain", task.id);
-        e.dataTransfer.effectAllowed = "move";
-      }}
-      onClick={() => {
-        onSelect();
-        setExpanded((v) => !v);
-      }}
-      title={locked ? lockedMessage(task) : "Drag to a column, or tap then tap a column's Move here button"}
-      className={cn(
-        "cursor-grab select-none rounded-2xl border border-slate-200 bg-white p-3.5 transition active:cursor-grabbing dark:border-slate-700 dark:bg-slate-800",
-        "hover:border-slate-300 dark:hover:border-slate-500",
-        locked && "opacity-60",
-        selected && "move-selected",
-        slaClass(sla),
-      )}
-    >
-      <div className="flex items-start justify-between gap-2">
-        <p className="text-sm font-medium leading-snug">{task.title}</p>
-        {locked && <LockBadge reason={lockedMessage(task)} />}
-      </div>
-      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
-        {task.slaDueAt && (
-          <span
-            className={cn(
-              "inline-flex items-center gap-1",
-              sla === "overdue" && "font-semibold text-rose-600 dark:text-rose-400",
-              sla === "warn" && "font-semibold text-amber-600 dark:text-amber-400",
-            )}
-          >
-            <ClockIcon className="h-3 w-3" />
-            {fmtDate(task.slaDueAt)} · {relativeDue(task.slaDueAt)}
-          </span>
-        )}
-        {task.priority !== "normal" && <span className="uppercase tracking-wide">{task.priority}</span>}
-        {task.site && <span>{task.site}</span>}
-      </div>
-      {expanded && (
-        <div className="mt-3 space-y-2" onClick={(e) => e.stopPropagation()}>
-          <StatusButtons task={task} onDone={() => setExpanded(false)} />
-          <button
-            type="button"
-            onClick={() => onRoadblock({ projectId: task.projectId, task })}
-            className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl border border-rose-300 bg-rose-50 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 dark:border-rose-800 dark:bg-rose-900/30 dark:text-rose-300"
-          >
-            <AlertIcon className="h-4 w-4" />
-            Log Roadblock
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-export default function Kanban({ projectId, onRoadblock }: Props) {
+export default function Kanban({ projectId }: { projectId: string }) {
   const { tasks, moveTask } = useApp();
   const [dragOver, setDragOver] = useState<TaskStatus | null>(null);
   const [moveCandidate, setMoveCandidate] = useState<string | null>(null);
@@ -162,19 +82,22 @@ export default function Kanban({ projectId, onRoadblock }: Props) {
 
             <div className="flex flex-1 flex-col gap-3">
               {byStatus[status].map((task) => (
-                <KanbanCard
+                <TaskCard
                   key={task.id}
                   task={task}
+                  variant="board"
                   selected={moveCandidate === task.id}
                   onSelect={() => setMoveCandidate((cur) => (cur === task.id ? null : task.id))}
-                  onRoadblock={onRoadblock}
+                  dragProps={{
+                    draggable: true,
+                    onDragStart: (e) => {
+                      e.dataTransfer.setData("text/plain", task.id);
+                      e.dataTransfer.effectAllowed = "move";
+                    },
+                  }}
                 />
               ))}
-              {byStatus[status].length === 0 && (
-                <p className="rounded-xl border border-dashed border-slate-300 p-4 text-center text-xs text-slate-400 dark:border-slate-600">
-                  Drop tasks here
-                </p>
-              )}
+              {byStatus[status].length === 0 && <EmptyState size="xs">Drop tasks here</EmptyState>}
             </div>
           </section>
         );

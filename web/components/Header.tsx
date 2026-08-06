@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useApp } from "@/lib/store";
-import { cn, divisionMeta, initials } from "@/lib/utils";
+import { canDecideApprovals, cn, divisionMeta, initials, safeLocalSet } from "@/lib/utils";
 import { CloudIcon, CloudOffIcon, MergeIcon, MoonIcon, ShieldIcon, SunIcon, SyncIcon } from "./Icons";
 
 const THEME_KEY = "opspm360:theme";
@@ -18,11 +18,7 @@ function ThemeToggle() {
   const toggle = () => {
     const next = !document.documentElement.classList.contains("dark");
     document.documentElement.classList.toggle("dark", next);
-    try {
-      localStorage.setItem(THEME_KEY, next ? "dark" : "light");
-    } catch {
-      /* ignore */
-    }
+    safeLocalSet(THEME_KEY, next ? "dark" : "light");
     setDark(next);
   };
 
@@ -69,7 +65,7 @@ function ConnectivityPill() {
 export default function Header() {
   const { user, logout, conflicts } = useApp();
   const div = divisionMeta(user?.division);
-  const isInfosec = user?.division === "infosec" || user?.role === "security_reviewer";
+  const canDecide = canDecideApprovals(user);
 
   return (
     <>
@@ -90,7 +86,7 @@ export default function Header() {
               >
                 Dashboard
               </Link>
-              {(isInfosec || user.division === "management") && (
+              {(canDecide || user.division === "infosec" || user.division === "management") && (
                 <Link
                   href="/approvals"
                   className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-700/60 dark:hover:text-white"

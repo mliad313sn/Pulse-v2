@@ -7,28 +7,34 @@ import Link from "next/link";
 import { useMemo } from "react";
 import { useApp } from "@/lib/store";
 import TaskCard from "@/components/TaskCard";
+import EmptyState from "@/components/EmptyState";
+import { PageHeader, SectionHeader } from "@/components/Headings";
 import { LockIcon } from "@/components/Icons";
 import { StatusBadge } from "@/components/Badges";
 import { SkeletonList } from "@/components/Skeleton";
 import { cn, fmtDate, relativeDue, slaClass, slaState } from "@/lib/utils";
-import type { RoadblockTarget } from "@/components/RoadblockSheet";
 
-export default function InfraDashboard({ onRoadblock }: { onRoadblock: (t: RoadblockTarget) => void }) {
-  const { tasks, projects, bootLoading, lockedMessage } = useApp();
+export default function InfraDashboard() {
+  const { tasks, projects, bootLoading, lockedMessage, lockedReason } = useApp();
 
-  const infraTasks = useMemo(() => {
-    const scoped = tasks.filter((t) => t.division === "infra" || projects.find((p) => p.id === t.projectId)?.division === "infra");
+  const { locked, ready, projectsById } = useMemo(() => {
+    const projectsById = new Map(projects.map((p) => [p.id, p]));
+    const scoped = tasks.filter(
+      (t) => t.division === "infra" || projectsById.get(t.projectId)?.division === "infra",
+    );
     const pool = scoped.length > 0 ? scoped : tasks;
-    return [...pool].sort((a, b) => (a.slaDueAt || "9999").localeCompare(b.slaDueAt || "9999"));
+    const infraTasks = [...pool].sort((a, b) => (a.slaDueAt || "9999").localeCompare(b.slaDueAt || "9999"));
+    return {
+      projectsById,
+      locked: infraTasks.filter((t) => t.locked && t.status !== "done"),
+      ready: infraTasks.filter((t) => !t.locked && t.status !== "done"),
+    };
   }, [tasks, projects]);
-
-  const locked = infraTasks.filter((t) => t.locked && t.status !== "done");
-  const ready = infraTasks.filter((t) => !t.locked && t.status !== "done");
 
   if (bootLoading && tasks.length === 0) {
     return (
       <div>
-        <h1 className="mb-6 text-2xl font-bold tracking-tight">Dependency timeline</h1>
+        <PageHeader title="Dependency timeline" />
         <SkeletonList count={5} />
       </div>
     );
@@ -36,28 +42,24 @@ export default function InfraDashboard({ onRoadblock }: { onRoadblock: (t: Roadb
 
   return (
     <div className="mx-auto max-w-3xl">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Dependency timeline</h1>
-        <p className="mt-1 text-slate-500 dark:text-slate-400">
-          {locked.length} locked behind prerequisites · {ready.length} ready to progress
-        </p>
-      </div>
+      <PageHeader
+        title="Dependency timeline"
+        subtitle={`${locked.length} locked behind prerequisites · ${ready.length} ready to progress`}
+      />
 
       <section className="mb-10">
-        <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+        <SectionHeader className="flex items-center gap-2">
           <LockIcon className="h-4 w-4" />
           Locked — waiting on prerequisites
-        </h2>
+        </SectionHeader>
         {locked.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500 dark:border-slate-600 dark:text-slate-400">
-            Nothing is blocked right now.
-          </div>
+          <EmptyState size="sm">Nothing is blocked right now.</EmptyState>
         ) : (
           <ol className="relative space-y-4 border-l-2 border-slate-200 pl-6 dark:border-slate-700">
             {locked.map((task) => {
-              const prereq = task.dependencyLock ? tasks.find((t) => t.id === task.dependencyLock) : null;
-              const project = projects.find((p) => p.id === task.projectId);
-              const gate = project?.securityGateStatus === "pending";
+              const reason = lockedReason(task);
+              const prereq = reason?.kind === "dependency" ? reason.prereq : undefined;
+              const project = projectsById.get(task.projectId);
               const sla = slaState(task);
               return (
                 <li key={task.id} className="relative">
@@ -87,7 +89,7 @@ export default function InfraDashboard({ onRoadblock }: { onRoadblock: (t: Roadb
                       <StatusBadge status={task.status} />
                     </div>
                     <p className="mt-2 rounded-xl bg-slate-100 px-3 py-2 text-sm text-slate-600 dark:bg-slate-700/50 dark:text-slate-300">
-                      {gate && !prereq
+                      {reason?.kind === "gate"
                         ? "Blocked by pending InfoSec security gate."
                         : prereq
                           ? `Blocked by prerequisite: "${prereq.title}" (${prereq.status.replace("_", " ")})`
@@ -107,18 +109,12 @@ export default function InfraDashboard({ onRoadblock }: { onRoadblock: (t: Roadb
       </section>
 
       <section>
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-          Ready to progress
-        </h2>
+        <SectionHeader>Ready to progress</SectionHeader>
         <div className="space-y-3">
           {ready.map((task) => (
-            <TaskCard key={task.id} task={task} onRoadblock={onRoadblock} />
+            <TaskCard key={task.id} task={task} />
           ))}
-          {ready.length === 0 && (
-            <div className="rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500 dark:border-slate-600 dark:text-slate-400">
-              No unblocked tasks pending.
-            </div>
-          )}
+          {ready.length === 0 && <EmptyState size="sm">No unblocked tasks pending.</EmptyState>}
         </div>
       </section>
     </div>
