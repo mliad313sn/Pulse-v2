@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased dark:bg-slate-900 dark:text-slate-100;
+}
+
+/* SLA urgency cues (Blueprint 4: subtle visual urgency, no notification fatigue) */
+@keyframes sla-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.85);
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2);
+  }
+}
+
+.sla-warn {
+  animation: sla-pulse 1.8s ease-in-out infinite;
+}
+
+.sla-overdue {
+  box-shadow: 0 0 0 2px rgb(225, 29, 72);
+}
+
+/* Bottom sheet */
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+.sheet-enter {
+  animation: sheet-up 0.22s ease-out;
+}
+
+/* Kanban drop target highlight */
+.drop-target {
+  @apply ring-2 ring-indigo-400 ring-offset-2 ring-offset-slate-50 dark:ring-offset-slate-900;
+}
+
+/* Card selected for touch move */
+.move-selected {
+  @apply ring-2 ring-indigo-500;
+}

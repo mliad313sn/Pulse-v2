@@ -1,0 +1,45 @@
+# OpsPM360 — Web (Next.js PWA)
+
+Offline-first frontend for OpsPM360. Conforms to `docs/API_CONTRACT.md` (camelCase entities, OCC versioning, `POST /api/sync` offline protocol, 423 gate handling).
+
+## Run
+
+```bash
+cd web
+npm install
+npm run dev          # http://localhost:3000 (dev)
+
+npm run build        # production build
+npm start            # serve production build on :3000
+```
+
+The service worker only registers in the production build (`npm run build && npm start`).
+
+## Environment
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `NEXT_PUBLIC_API_URL` | `http://localhost:4000` | Base URL of the OpsPM360 API server |
+
+Example: `NEXT_PUBLIC_API_URL=http://10.0.0.5:4000 npm run build` (it is inlined at build time).
+
+## How it works
+
+- **Login**: pick a persona from `GET /api/users`; the choice persists in `localStorage` and every request carries `x-user-id`.
+- **Bootstrap**: after login, `GET /api/bootstrap` is cached wholesale into IndexedDB (`lib/db.ts` — stores: projects, tasks, roadblocks, approvals, users, outbox, conflicts, meta).
+- **Reads**: always render from IndexedDB first, then refresh from the network when online.
+- **Writes**: optimistic to IndexedDB. Online writes go straight to `PATCH`/`POST` (OCC `version` in body); offline or failed writes are queued in the outbox with the contract's sync op shape and flushed through `POST /api/sync` on reconnect (online event + 20s retry + after mutations).
+- **Conflicts**: `conflict_manual` results land in a conflicts store, surface a "Merge needed" banner, and are resolved per-field at `/conflicts`.
+- **Gates**: `423 DEPENDENCY_LOCKED` / `SECURITY_GATE` (direct or via sync `rejected`) show friendly toasts naming the prerequisite or gate. Locked tasks are dimmed with a padlock and cannot be moved to in-progress/done.
+- **Dashboards** adapt to the user's division: ops (Zen Mode), infra (dependency timeline), infosec (approvals queue), management (portfolio matrix + PPTX/PDF deck export), ea/data/bizapps (tagged portfolio).
+
+## Pages
+
+| Route | Purpose |
+|---|---|
+| `/` | Persona picker (no user) or role-adaptive dashboard |
+| `/projects/[id]` | Kanban (drag-and-drop + touch fallback), roadblocks, audit peek |
+| `/approvals` | InfoSec approval queue (approve/reject with notes) |
+| `/conflicts` | Manual merge (local vs server, per-field) |
+
+The app renders fully without the API server: cached data (or clean empty states) — never a crash.
