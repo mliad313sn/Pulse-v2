@@ -1,0 +1,666 @@
+openapi: 3.0.3
+info:
+  title: OpsPM360 API
+  version: "1.0.0"
+  description: |
+    Offline-first project portfolio management for multi-site mining IT operations.
+    Demo-grade auth: every request (except public endpoints) carries `x-user-id: <uuid>`.
+    Governance invariants (OCC, dependency locking, InfoSec gates, audit) are enforced
+    server-side and mirrored by PostgreSQL triggers.
+servers:
+  - url: http://localhost:4000/api
+tags:
+  - name: system
+  - name: users
+  - name: projects
+  - name: tasks
+  - name: roadblocks
+  - name: approvals
+  - name: sync
+  - name: audit
+  - name: reports
+
+security:
+  - userIdHeader: []
+
+paths:
+  /health:
+    get:
+      tags: [system]
+      summary: Liveness probe
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+
+  /users:
+    get:
+      tags: [users]
+      summary: Demo user directory (role switcher)
+      security: []
+      responses:
+        "200":
+          description: All selectable demo users
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/User" }
+
+  /bootstrap:
+    get:
+      tags: [system]
+      summary: Everything the client caches into IndexedDB
+      responses:
+        "200":
+          description: Bootstrap payload
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+                  projects:
+                    type: array
+                    items: { $ref: "#/components/schemas/Project" }
+                  tasks:
+                    type: array
+                    items: { $ref: "#/components/schemas/Task" }
+                  roadblocks:
+                    type: array
+                    items: { $ref: "#/components/schemas/Roadblock" }
+                  approvals:
+                    type: array
+                    items: { $ref: "#/components/schemas/SecurityApproval" }
+                  serverTime: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /projects:
+    get:
+      tags: [projects]
+      summary: List projects
+      responses:
+        "200":
+          description: Projects
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Project" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+    post:
+      tags: [projects]
+      summary: Create a project (division_lead or group_manager)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectCreate" }
+      responses:
+        "201":
+          description: Created (re-read after write — a risk tag may already have flipped the security gate to pending)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /projects/{id}:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    get:
+      tags: [projects]
+      summary: Get a project
+      responses:
+        "200":
+          description: Project
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [projects]
+      summary: Update a project (OCC — body must include base `version`)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectPatch" }
+      responses:
+        "200":
+          description: Updated project
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/VersionConflict" }
+
+  /projects/{id}/tasks:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    get:
+      tags: [tasks]
+      summary: Tasks of a project (includes derived `locked`)
+      responses:
+        "200":
+          description: Tasks
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Task" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tasks:
+    get:
+      tags: [tasks]
+      summary: List tasks (includes derived `locked`)
+      parameters:
+        - name: projectId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Tasks
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Task" }
+    post:
+      tags: [tasks]
+      summary: Create a task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaskCreate" }
+      responses:
+        "201":
+          description: Created task
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/Validation" }
+
+  /tasks/{id}:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    get:
+      tags: [tasks]
+      summary: Get a task (includes derived `locked`)
+      responses:
+        "200":
+          description: Task
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [tasks]
+      summary: Update a task (OCC + governance gates)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaskPatch" }
+      responses:
+        "200":
+          description: Updated task
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/VersionConflict" }
+        "423": { $ref: "#/components/responses/Gated" }
+
+  /roadblocks:
+    get:
+      tags: [roadblocks]
+      summary: List roadblocks
+      parameters:
+        - name: projectId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Roadblocks
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Roadblock" }
+    post:
+      tags: [roadblocks]
+      summary: Log a roadblock (1-request field logging; severity defaults to medium)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoadblockCreate" }
+      responses:
+        "201":
+          description: Created roadblock
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Roadblock" }
+        "400": { $ref: "#/components/responses/Validation" }
+
+  /roadblocks/{id}:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    patch:
+      tags: [roadblocks]
+      summary: Update a roadblock (OCC)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoadblockPatch" }
+      responses:
+        "200":
+          description: Updated roadblock
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Roadblock" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/VersionConflict" }
+
+  /approvals:
+    get:
+      tags: [approvals]
+      summary: List security approvals (InfoSec queue)
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, approved, rejected]
+      responses:
+        "200":
+          description: Approvals
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SecurityApproval" }
+
+  /approvals/{id}/decision:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    post:
+      tags: [approvals]
+      summary: Decide an approval (security_reviewer only; recomputes project gate)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision:
+                  type: string
+                  enum: [approved, rejected]
+                notes: { type: string, nullable: true }
+      responses:
+        "200":
+          description: Decision applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  approval: { $ref: "#/components/schemas/SecurityApproval" }
+                  project: { $ref: "#/components/schemas/Project" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /audit:
+    get:
+      tags: [audit]
+      summary: Read-only audit trail
+      parameters:
+        - name: entityId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Audit entries (immutable ledger)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AuditEntry" }
+
+  /sync:
+    post:
+      tags: [sync]
+      summary: Offline batch sync (OCC + LWW + governance gates)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SyncRequest" }
+      responses:
+        "200":
+          description: Per-operation results
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SyncResponse" }
+        "400": { $ref: "#/components/responses/Validation" }
+
+  /reports/executive-deck:
+    get:
+      tags: [reports]
+      summary: Executive deck download (active projects grouped by division)
+      parameters:
+        - name: format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pptx, pdf]
+            default: pptx
+      responses:
+        "200":
+          description: Binary deck (Content-Disposition attachment)
+          content:
+            application/vnd.openxmlformats-officedocument.presentationml.presentation:
+              schema: { type: string, format: binary }
+            application/pdf:
+              schema: { type: string, format: binary }
+        "400": { $ref: "#/components/responses/Validation" }
+
+components:
+  securitySchemes:
+    userIdHeader:
+      type: apiKey
+      in: header
+      name: x-user-id
+      description: UUID of a demo user (see GET /users)
+
+  parameters:
+    EntityId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    Unauthenticated:
+      description: Missing/unknown x-user-id
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: Role not allowed
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Entity missing
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Validation:
+      description: Bad payload
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    VersionConflict:
+      description: OCC mismatch — detail.serverState carries the current entity
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Gated:
+      description: DEPENDENCY_LOCKED or SECURITY_GATE
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          enum: [UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, VERSION_CONFLICT, DEPENDENCY_LOCKED, SECURITY_GATE, VALIDATION, INTERNAL]
+        message: { type: string }
+        detail:
+          type: object
+          nullable: true
+
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string }
+        division: { type: string, enum: [ops, infra, ea, infosec, data, bizapps, management] }
+        site: { type: string, nullable: true, enum: [sabodala, saly, hq, null] }
+        role: { type: string, enum: [member, site_manager, division_lead, group_manager, security_reviewer] }
+        createdAt: { type: string, format: date-time }
+
+    Project:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        division: { type: string }
+        site: { type: string, nullable: true }
+        cgeitTag:
+          type: string
+          enum: [strategic_alignment, value_delivery, risk_optimization, resource_optimization, performance_measurement]
+        strategicTag: { type: string, nullable: true }
+        riskTags:
+          type: array
+          items: { type: string }
+        overallStatus: { type: string, enum: [draft, active, at_risk, on_hold, complete] }
+        securityGateStatus: { type: string, enum: [not_required, pending, approved, rejected] }
+        ownerId: { type: string, format: uuid, nullable: true }
+        version: { type: integer }
+        updatedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    ProjectCreate:
+      type: object
+      required: [name, division]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        division: { type: string }
+        site: { type: string }
+        cgeitTag: { type: string }
+        strategicTag: { type: string }
+        riskTags:
+          type: array
+          items: { type: string }
+        overallStatus: { type: string }
+        ownerId: { type: string, format: uuid }
+
+    ProjectPatch:
+      allOf:
+        - $ref: "#/components/schemas/ProjectCreate"
+      type: object
+      required: [version]
+      properties:
+        version:
+          type: integer
+          description: Base version for OCC
+
+    Task:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        division: { type: string, nullable: true }
+        site: { type: string, nullable: true }
+        assigneeId: { type: string, format: uuid, nullable: true }
+        status: { type: string, enum: [todo, in_progress, blocked, done] }
+        priority: { type: string, enum: [low, normal, high, critical] }
+        dependencyLock:
+          type: string
+          format: uuid
+          nullable: true
+          description: Prerequisite task id; null = unlocked
+        riskTags:
+          type: array
+          items: { type: string }
+        slaDueAt: { type: string, format: date-time, nullable: true }
+        locked:
+          type: boolean
+          description: Derived — prerequisite not done OR project security gate pending
+        version: { type: integer }
+        updatedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    TaskCreate:
+      type: object
+      required: [projectId, title]
+      properties:
+        projectId: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string }
+        division: { type: string }
+        site: { type: string }
+        assigneeId: { type: string, format: uuid }
+        status: { type: string }
+        priority: { type: string }
+        dependencyLock: { type: string, format: uuid, nullable: true }
+        riskTags:
+          type: array
+          items: { type: string }
+        slaDueAt: { type: string, format: date-time }
+
+    TaskPatch:
+      allOf:
+        - $ref: "#/components/schemas/TaskCreate"
+      type: object
+      required: [version]
+      properties:
+        version:
+          type: integer
+          description: Base version for OCC
+
+    Roadblock:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        taskId: { type: string, format: uuid, nullable: true }
+        description: { type: string }
+        severity: { type: string, enum: [low, medium, high, critical] }
+        status: { type: string, enum: [open, mitigating, resolved] }
+        reportedBy: { type: string, format: uuid, nullable: true }
+        version: { type: integer }
+        updatedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    RoadblockCreate:
+      type: object
+      required: [projectId, description]
+      properties:
+        projectId: { type: string, format: uuid }
+        taskId: { type: string, format: uuid }
+        description: { type: string }
+        severity: { type: string, enum: [low, medium, high, critical], default: medium }
+        status: { type: string, enum: [open, mitigating, resolved], default: open }
+
+    RoadblockPatch:
+      type: object
+      required: [version]
+      properties:
+        version: { type: integer }
+        taskId: { type: string, format: uuid, nullable: true }
+        description: { type: string }
+        severity: { type: string }
+        status: { type: string }
+
+    SecurityApproval:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        taskId: { type: string, format: uuid, nullable: true }
+        riskTag: { type: string, enum: [network_alteration, firewall_change, external_exposure] }
+        status: { type: string, enum: [pending, approved, rejected] }
+        requestedAt: { type: string, format: date-time }
+        reviewedBy: { type: string, format: uuid, nullable: true }
+        reviewedAt: { type: string, format: date-time, nullable: true }
+        notes: { type: string, nullable: true }
+
+    AuditEntry:
+      type: object
+      properties:
+        id: { type: integer }
+        entityType: { type: string }
+        entityId: { type: string, format: uuid, nullable: true }
+        action: { type: string, enum: [INSERT, UPDATE, DELETE] }
+        actorId: { type: string, format: uuid, nullable: true }
+        cgeitTag: { type: string, nullable: true }
+        oldData: { type: object, nullable: true }
+        newData: { type: object, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    SyncOperation:
+      type: object
+      required: [opId, entity, op]
+      properties:
+        opId: { type: string, format: uuid, description: Client-generated }
+        entity: { type: string, enum: [task, project, roadblock] }
+        entityId: { type: string, format: uuid }
+        op: { type: string, enum: [update, create] }
+        baseVersion: { type: integer }
+        clientUpdatedAt: { type: string, format: date-time }
+        fields: { type: object }
+
+    SyncRequest:
+      type: object
+      required: [clientId, operations]
+      properties:
+        clientId: { type: string, description: Device UUID }
+        operations:
+          type: array
+          items: { $ref: "#/components/schemas/SyncOperation" }
+
+    SyncResult:
+      type: object
+      properties:
+        opId: { type: string, nullable: true }
+        result: { type: string, enum: [applied, lww_applied, conflict_manual, rejected] }
+        entity: { type: string, nullable: true }
+        entityId: { type: string, nullable: true }
+        serverState:
+          type: object
+          nullable: true
+          description: Current server entity — set on conflict_manual (and on gate-rejected updates when available)
+        error:
+          type: string
+          nullable: true
+          description: NOT_FOUND | DEPENDENCY_LOCKED | SECURITY_GATE | VALIDATION when rejected
+
+    SyncResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/SyncResult" }
+        serverTime: { type: string, format: date-time }
