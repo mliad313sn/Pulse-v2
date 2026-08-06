@@ -64,6 +64,12 @@ export interface Task {
   locked?: boolean;
 }
 
+/** Target for the "Log Roadblock" sheet — a project, optionally scoped to a task. */
+export interface RoadblockTarget {
+  projectId: string;
+  task?: Task | null;
+}
+
 export interface Roadblock {
   id: string;
   projectId: string;

@@ -77,82 +77,52 @@ function tx<T>(
   );
 }
 
-export async function getAll<T>(store: StoreName): Promise<T[]> {
-  if (!hasIDB()) return [];
-  try {
-    return await tx<T[]>(store, "readonly", (s) => s.getAll() as IDBRequest<T[]>);
-  } catch {
-    return [];
-  }
+/** Run an IndexedDB operation, resolving to `fallback` when IDB is unavailable or fails. */
+function safe<T>(fallback: T, fn: () => Promise<T>): Promise<T> {
+  if (!hasIDB()) return Promise.resolve(fallback);
+  return fn().catch(() => fallback);
 }
 
-export async function get<T>(store: StoreName, key: IDBValidKey): Promise<T | undefined> {
-  if (!hasIDB()) return undefined;
-  try {
-    return await tx<T | undefined>(store, "readonly", (s) => s.get(key) as IDBRequest<T | undefined>);
-  } catch {
-    return undefined;
-  }
+export function getAll<T>(store: StoreName): Promise<T[]> {
+  return safe<T[]>([], () => tx<T[]>(store, "readonly", (s) => s.getAll() as IDBRequest<T[]>));
 }
 
-export async function put(store: StoreName, value: unknown): Promise<void> {
-  if (!hasIDB()) return;
-  try {
-    await tx(store, "readwrite", (s) => void s.put(value));
-  } catch {
-    /* best-effort cache */
-  }
+export function get<T>(store: StoreName, key: IDBValidKey): Promise<T | undefined> {
+  return safe<T | undefined>(undefined, () =>
+    tx<T | undefined>(store, "readonly", (s) => s.get(key) as IDBRequest<T | undefined>),
+  );
 }
 
-export async function bulkPut(store: StoreName, values: unknown[]): Promise<void> {
-  if (!hasIDB() || values.length === 0) return;
-  try {
-    await tx(store, "readwrite", (s) => {
-      values.forEach((v) => s.put(v));
-    });
-  } catch {
-    /* best-effort cache */
-  }
+export function put(store: StoreName, value: unknown): Promise<void> {
+  return safe(undefined, () => tx(store, "readwrite", (s) => void s.put(value)));
 }
 
 /** Clear a store then write fresh values (used after /api/bootstrap). */
-export async function replaceAll(store: StoreName, values: unknown[]): Promise<void> {
-  if (!hasIDB()) return;
-  try {
-    await tx(store, "readwrite", (s) => {
+export function replaceAll(store: StoreName, values: unknown[]): Promise<void> {
+  return safe(undefined, () =>
+    tx(store, "readwrite", (s) => {
       s.clear();
       values.forEach((v) => s.put(v));
-    });
-  } catch {
-    /* best-effort cache */
-  }
+    }),
+  );
 }
 
-export async function del(store: StoreName, key: IDBValidKey): Promise<void> {
-  if (!hasIDB()) return;
-  try {
-    await tx(store, "readwrite", (s) => void s.delete(key));
-  } catch {
-    /* best-effort */
-  }
+export function del(store: StoreName, key: IDBValidKey): Promise<void> {
+  return safe(undefined, () => tx(store, "readwrite", (s) => void s.delete(key)));
 }
 
-export async function clear(store: StoreName): Promise<void> {
-  if (!hasIDB()) return;
-  try {
-    await tx(store, "readwrite", (s) => void s.clear());
-  } catch {
-    /* best-effort */
-  }
+/** Delete many keys in a single transaction. */
+export function bulkDel(store: StoreName, keys: IDBValidKey[]): Promise<void> {
+  if (keys.length === 0) return Promise.resolve();
+  return safe(undefined, () =>
+    tx(store, "readwrite", (s) => {
+      keys.forEach((k) => s.delete(k));
+    }),
+  );
 }
 
-export async function count(store: StoreName): Promise<number> {
-  if (!hasIDB()) return 0;
-  try {
-    return await tx<number>(store, "readonly", (s) => s.count());
-  } catch {
-    return 0;
-  }
+export function count(store: StoreName): Promise<number> {
+  return safe(0, () => tx<number>(store, "readonly", (s) => s.count()));
 }
 
 // meta helpers ---------------------------------------------------------------

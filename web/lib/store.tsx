@@ -19,7 +19,7 @@ import {
 import * as idb from "./db";
 import { api, ApiError, USER_ID_KEY } from "./api";
 import { enqueueOp, flushOutbox, outboxCount } from "./sync";
-import { uuid } from "./utils";
+import { isGatedTransition, safeLocalGet, safeLocalRemove, safeLocalSet, uuid } from "./utils";
 import { useToast } from "@/components/Toast";
 import type {
   Bootstrap,
@@ -28,6 +28,7 @@ import type {
   QueuedOp,
   Roadblock,
   RoadblockSeverity,
+  RoadblockTarget,
   SecurityApproval,
   SyncEntity,
   Task,
@@ -36,13 +37,8 @@ import type {
 
 type EntityListKey = "projects" | "tasks" | "roadblocks";
 
+// Doubles as the API path segment (`/api/${ENTITY_TO_LIST[entity]}/…`).
 const ENTITY_TO_LIST: Record<SyncEntity, EntityListKey> = {
-  project: "projects",
-  task: "tasks",
-  roadblock: "roadblocks",
-};
-
-const ENTITY_TO_PATH: Record<SyncEntity, string> = {
   project: "projects",
   task: "tasks",
   roadblock: "roadblocks",
@@ -63,7 +59,12 @@ export interface AppState {
   outboxCount: number;
   refreshedAt: string | null;
   bootLoading: boolean;
+  /** Target of the globally-rendered RoadblockSheet (null = closed). */
+  roadblockTarget: RoadblockTarget | null;
 }
+
+/** Why a task is locked: pending security gate, or an unfinished prerequisite. */
+export type LockedReason = { kind: "gate" | "dependency"; prereq?: Task };
 
 export interface MutateOutcome {
   ok: boolean;
@@ -74,10 +75,7 @@ export interface MutateOutcome {
 interface AppActions {
   login: (user: User) => Promise<void>;
   logout: () => void;
-  refresh: () => Promise<void>;
-  flush: () => Promise<void>;
   loadUsers: () => Promise<void>;
-  updateTask: (taskId: string, fields: Partial<Task>) => Promise<MutateOutcome>;
   moveTask: (taskId: string, status: Task["status"]) => Promise<MutateOutcome>;
   updateRoadblock: (id: string, fields: Partial<Roadblock>) => Promise<MutateOutcome>;
   createRoadblock: (input: {
@@ -92,7 +90,10 @@ interface AppActions {
     notes?: string,
   ) => Promise<MutateOutcome>;
   resolveConflict: (opId: string, resolution: "server" | Record<string, unknown>) => Promise<void>;
+  lockedReason: (task: Task) => LockedReason | null;
   lockedMessage: (task: Task) => string;
+  openRoadblock: (target: RoadblockTarget) => void;
+  closeRoadblock: () => void;
 }
 
 const INITIAL_STATE: AppState = {
@@ -110,6 +111,7 @@ const INITIAL_STATE: AppState = {
   outboxCount: 0,
   refreshedAt: null,
   bootLoading: false,
+  roadblockTarget: null,
 };
 
 const AppCtx = createContext<(AppState & AppActions) | null>(null);
@@ -145,13 +147,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const flushingRef = useRef(false);
 
   const patch = useCallback((partial: Partial<AppState> | ((prev: AppState) => Partial<AppState>)) => {
-    // Eagerly mirror into stateRef so async callers (login -> refresh) that run
-    // before React commits the render still observe the update.
-    stateRef.current = {
+    // Resolve once against stateRef and eagerly mirror the snapshot so async
+    // callers (login -> refresh) that run before React commits still observe it.
+    const next = {
       ...stateRef.current,
       ...(typeof partial === "function" ? partial(stateRef.current) : partial),
     };
-    setState((prev) => ({ ...prev, ...(typeof partial === "function" ? partial(prev) : partial) }));
+    stateRef.current = next;
+    setState(next);
   }, []);
 
   // ---- local entity helpers -------------------------------------------------
@@ -172,20 +175,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [patch],
   );
 
-  const lockedMessage = useCallback((task: Task): string => {
+  // Single source of truth for WHY a task is locked (gate takes precedence).
+  const lockedReason = useCallback((task: Task): LockedReason | null => {
     const s = stateRef.current;
     const project = s.projects.find((p) => p.id === task.projectId);
-    if (project?.securityGateStatus === "pending") {
-      return "Security gate: this project is awaiting InfoSec approval before its tasks can advance.";
-    }
+    if (project?.securityGateStatus === "pending") return { kind: "gate" };
     if (task.dependencyLock) {
-      const prereq = s.tasks.find((t) => t.id === task.dependencyLock);
-      return prereq
-        ? `Locked: prerequisite "${prereq.title}" must be marked done first.`
-        : "Locked: a prerequisite task must be completed first.";
+      return { kind: "dependency", prereq: s.tasks.find((t) => t.id === task.dependencyLock) };
     }
-    return "This task is locked by a governance gate.";
+    return null;
   }, []);
+
+  const lockedMessage = useCallback(
+    (task: Task): string => {
+      const reason = lockedReason(task);
+      if (reason?.kind === "gate") {
+        return "Security gate: this project is awaiting InfoSec approval before its tasks can advance.";
+      }
+      if (reason?.kind === "dependency") {
+        return reason.prereq
+          ? `Locked: prerequisite "${reason.prereq.title}" must be marked done first.`
+          : "Locked: a prerequisite task must be completed first.";
+      }
+      return "This task is locked by a governance gate.";
+    },
+    [lockedReason],
+  );
+
+  const openRoadblock = useCallback(
+    (target: RoadblockTarget) => patch({ roadblockTarget: target }),
+    [patch],
+  );
+
+  const closeRoadblock = useCallback(() => patch({ roadblockTarget: null }), [patch]);
 
   const friendlyError = useCallback(
     (code: string | null | undefined, entity: SyncEntity, entityId: string): string => {
@@ -212,14 +234,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const refreshOutboxCount = useCallback(async () => {
     const n = await outboxCount();
-    patch({ outboxCount: n });
+    // Skip the patch when unchanged so idle polls don't re-render every consumer.
+    if (stateRef.current.outboxCount !== n) patch({ outboxCount: n });
   }, [patch]);
 
   const flush = useCallback(async () => {
     const s = stateRef.current;
     if (!s.online || flushingRef.current || !s.user) return;
     const n = await outboxCount();
-    patch({ outboxCount: n });
+    if (stateRef.current.outboxCount !== n) patch({ outboxCount: n });
     if (n === 0) return;
     flushingRef.current = true;
     patch({ syncing: true });
@@ -285,15 +308,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const rebase = <T extends { id: string }>(list: T[], entity: SyncEntity): T[] => {
         const ops = queued.filter((o) => o.entity === entity);
         if (ops.length === 0) return list;
-        let next = list;
+        // Fold queued ops into per-entity field patches once, then merge in one pass.
+        const fieldsById = new Map<string, Record<string, unknown>>();
+        const createIds: string[] = [];
         for (const op of ops) {
-          const idx = next.findIndex((x) => x.id === op.entityId);
-          if (idx >= 0) {
-            const merged = { ...next[idx], ...op.fields } as T;
-            next = [...next.slice(0, idx), merged, ...next.slice(idx + 1)];
-          } else if (op.op === "create") {
-            next = [...next, { id: op.entityId, version: 1, ...op.fields } as unknown as T];
-          }
+          fieldsById.set(op.entityId, { ...fieldsById.get(op.entityId), ...op.fields });
+          if (op.op === "create") createIds.push(op.entityId);
+        }
+        const present = new Set(list.map((x) => x.id));
+        const next = list.map((item) =>
+          fieldsById.has(item.id) ? ({ ...item, ...fieldsById.get(item.id) } as T) : item,
+        );
+        for (const id of createIds) {
+          if (!present.has(id)) next.push({ id, version: 1, ...fieldsById.get(id) } as unknown as T);
         }
         return next;
       };

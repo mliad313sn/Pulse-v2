@@ -1,8 +1,47 @@
-import type { Division, ProjectStatus, RoadblockSeverity, Task, TaskStatus } from "./types";
+import type { Division, ProjectStatus, RoadblockSeverity, Task, TaskStatus, User } from "./types";
 
 /** Tiny classnames helper. */
 export function cn(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
+}
+
+/** A locked task may not advance into in_progress/done (governance gate). */
+export function isGatedTransition(task: Pick<Task, "locked">, nextStatus: TaskStatus): boolean {
+  return Boolean(task.locked) && (nextStatus === "in_progress" || nextStatus === "done");
+}
+
+/** Mirrors the server rule: only security reviewers may resolve approvals. */
+export function canDecideApprovals(user: Pick<User, "role"> | null | undefined): boolean {
+  return user?.role === "security_reviewer";
+}
+
+// Safe localStorage wrappers — no-ops when storage is unavailable (SSR, private mode).
+
+export function safeLocalGet(key: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+export function safeLocalSet(key: string, value: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function safeLocalRemove(key: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    /* ignore */
+  }
 }
 
 export function uuid(): string {

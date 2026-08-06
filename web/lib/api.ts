@@ -3,17 +3,14 @@
 // - every request carries x-user-id
 // - error envelope { error, message, detail } surfaced as ApiError
 
+import { safeLocalGet } from "./utils";
+
 export const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000").replace(/\/+$/, "");
 
 export const USER_ID_KEY = "opspm360:userId";
 
 export function currentUserId(): string | null {
-  if (typeof window === "undefined") return null;
-  try {
-    return localStorage.getItem(USER_ID_KEY);
-  } catch {
-    return null;
-  }
+  return safeLocalGet(USER_ID_KEY);
 }
 
 export class ApiError extends Error {
@@ -45,6 +42,28 @@ interface ApiOptions {
   userId?: string | null;
 }
 
+/** Parse the error envelope ({ error, message, detail }) and throw an ApiError. */
+async function throwApiError(res: Response): Promise<never> {
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = (await res.json()) as Record<string, unknown>;
+  } catch {
+    /* non-JSON error */
+  }
+  const detail = payload.detail as Record<string, unknown> | undefined;
+  const serverState =
+    (payload.serverState as Record<string, unknown> | undefined) ??
+    (detail?.serverState as Record<string, unknown> | undefined) ??
+    null;
+  throw new ApiError(
+    res.status,
+    (payload.error as string) || `HTTP_${res.status}`,
+    (payload.message as string) || res.statusText,
+    payload.detail,
+    serverState,
+  );
+}
+
 export async function api<T = unknown>(path: string, opts: ApiOptions = {}): Promise<T> {
   const userId = opts.userId ?? currentUserId();
   const headers: Record<string, string> = { ...(opts.headers || {}) };
@@ -57,26 +76,7 @@ export async function api<T = unknown>(path: string, opts: ApiOptions = {}): Pro
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
   });
 
-  if (!res.ok) {
-    let payload: Record<string, unknown> = {};
-    try {
-      payload = (await res.json()) as Record<string, unknown>;
-    } catch {
-      /* non-JSON error */
-    }
-    const detail = payload.detail as Record<string, unknown> | undefined;
-    const serverState =
-      (payload.serverState as Record<string, unknown> | undefined) ??
-      (detail?.serverState as Record<string, unknown> | undefined) ??
-      null;
-    throw new ApiError(
-      res.status,
-      (payload.error as string) || `HTTP_${res.status}`,
-      (payload.message as string) || res.statusText,
-      payload.detail,
-      serverState,
-    );
-  }
+  if (!res.ok) return throwApiError(res);
 
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -88,19 +88,6 @@ export async function apiBlob(path: string): Promise<Blob> {
   const res = await fetch(`${API_BASE}${path}`, {
     headers: userId ? { "x-user-id": userId } : {},
   });
-  if (!res.ok) {
-    let payload: Record<string, unknown> = {};
-    try {
-      payload = (await res.json()) as Record<string, unknown>;
-    } catch {
-      /* ignore */
-    }
-    throw new ApiError(
-      res.status,
-      (payload.error as string) || `HTTP_${res.status}`,
-      (payload.message as string) || res.statusText,
-      payload.detail,
-    );
-  }
+  if (!res.ok) return throwApiError(res);
   return res.blob();
 }

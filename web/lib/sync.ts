@@ -3,22 +3,19 @@
 
 import * as idb from "./db";
 import { api } from "./api";
+import { safeLocalGet, safeLocalSet, uuid } from "./utils";
 import type { QueuedOp, SyncOp, SyncResult } from "./types";
 
 const CLIENT_ID_KEY = "opspm360:clientId";
 
 export function getClientId(): string {
   if (typeof window === "undefined") return "server";
-  try {
-    let id = localStorage.getItem(CLIENT_ID_KEY);
-    if (!id) {
-      id = crypto.randomUUID();
-      localStorage.setItem(CLIENT_ID_KEY, id);
-    }
-    return id;
-  } catch {
-    return "anonymous-device";
+  let id = safeLocalGet(CLIENT_ID_KEY);
+  if (!id) {
+    id = uuid();
+    safeLocalSet(CLIENT_ID_KEY, id);
   }
+  return id;
 }
 
 /** Enqueue an operation into the outbox (IndexedDB). */
@@ -59,9 +56,13 @@ export async function flushOutbox(handlers: FlushHandlers = {}): Promise<FlushSu
     body: { clientId: getClientId(), operations },
   });
 
-  for (const result of res.results ?? []) {
-    const op = rows.find((r) => r.opId === result.opId);
-    await idb.del("outbox", result.opId);
+  const results = res.results ?? [];
+  const rowsByOpId = new Map(rows.map((r) => [r.opId, r]));
+  // All returned ops leave the outbox (applied, conflict, or rejected) — one transaction.
+  await idb.bulkDel("outbox", results.map((r) => r.opId));
+
+  for (const result of results) {
+    const op = rowsByOpId.get(result.opId);
     summary.flushed += 1;
     if (result.result === "applied" || result.result === "lww_applied") {
       summary.applied += 1;
