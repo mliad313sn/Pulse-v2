@@ -145,6 +145,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const flushingRef = useRef(false);
 
   const patch = useCallback((partial: Partial<AppState> | ((prev: AppState) => Partial<AppState>)) => {
+    // Eagerly mirror into stateRef so async callers (login -> refresh) that run
+    // before React commits the render still observe the update.
+    stateRef.current = {
+      ...stateRef.current,
+      ...(typeof partial === "function" ? partial(stateRef.current) : partial),
+    };
     setState((prev) => ({ ...prev, ...(typeof partial === "function" ? partial(prev) : partial) }));
   }, []);
 
