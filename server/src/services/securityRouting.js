@@ -8,11 +8,25 @@
  *   - flip the project's securityGateStatus to 'pending'.
  */
 import { randomUUID } from 'node:crypto';
-import { forbidden, notFound, validation } from '../errors.js';
+import { notFound, validation } from '../errors.js';
+import { assertCan } from './policy.js';
+import { nowIso } from './time.js';
 
+// db/init/01_schema.sql:security_risk_tags is the DB-side source of this list; both must change together.
 export const SECURITY_RISK_TAGS = ['network_alteration', 'firewall_change', 'external_exposure'];
 
-const nowIso = () => new Date().toISOString();
+/** Set the project's securityGateStatus (with version bump) if it differs. */
+async function setProjectGate(repo, projectId, gate) {
+  const project = await repo.get('project', projectId);
+  if (project && project.securityGateStatus !== gate) {
+    await repo.update('project', {
+      ...project,
+      securityGateStatus: gate,
+      version: project.version + 1,
+      updatedAt: nowIso(),
+    });
+  }
+}
 
 /**
  * @param repo repository (already actor-scoped / inside a transaction)
@@ -53,15 +67,7 @@ export async function ensureSecurityRouting(repo, kind, entity) {
   }
 
   if (createdAny) {
-    const project = await repo.get('project', projectId);
-    if (project && project.securityGateStatus !== 'pending') {
-      await repo.update('project', {
-        ...project,
-        securityGateStatus: 'pending',
-        version: project.version + 1,
-        updatedAt: nowIso(),
-      });
-    }
+    await setProjectGate(repo, projectId, 'pending');
   }
 }
 
@@ -81,9 +87,7 @@ export function recomputeGateStatus(approvals) {
  * Returns { approval, project }.
  */
 export async function applyApprovalDecision(repo, reviewer, approvalId, { decision, notes } = {}) {
-  if (reviewer?.role !== 'security_reviewer') {
-    throw forbidden('Only InfoSec (security_reviewer role) may resolve security approvals');
-  }
+  assertCan(reviewer, 'approval:decide');
   if (decision !== 'approved' && decision !== 'rejected') {
     throw validation("decision must be 'approved' or 'rejected'");
   }
@@ -104,16 +108,7 @@ export async function applyApprovalDecision(repo, reviewer, approvalId, { decisi
   await repo.update('approval', decided);
 
   const all = await repo.list('approval', { projectId: approval.projectId });
-  const gate = recomputeGateStatus(all);
-  const project = await repo.get('project', approval.projectId);
-  if (project && project.securityGateStatus !== gate) {
-    await repo.update('project', {
-      ...project,
-      securityGateStatus: gate,
-      version: project.version + 1,
-      updatedAt: nowIso(),
-    });
-  }
+  await setProjectGate(repo, approval.projectId, recomputeGateStatus(all));
 
   return { approval: decided, project: await repo.get('project', approval.projectId) };
 }

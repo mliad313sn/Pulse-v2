@@ -6,16 +6,10 @@
  * layer runs the same checks first to produce friendly typed errors.
  */
 import pg from 'pg';
-import { ApiError } from '../errors.js';
+import { dependencyLocked, forbidden, securityGate } from '../errors.js';
+import { TABLES } from './tables.js';
 
 const { Pool } = pg;
-
-const TABLES = {
-  project: 'projects',
-  task: 'tasks',
-  roadblock: 'roadblocks',
-  approval: 'security_approvals',
-};
 
 // camelCase (wire/service) -> snake_case (db) per entity kind.
 const COLUMNS = {
@@ -67,15 +61,9 @@ function mapUser(row) {
 /** Translate DB trigger exceptions into the contract's typed errors. */
 function translateDbError(err) {
   const msg = String(err?.message ?? '');
-  if (msg.includes('DEPENDENCY_LOCKED')) {
-    return new ApiError(423, 'DEPENDENCY_LOCKED', 'Prerequisite task is not complete');
-  }
-  if (msg.includes('SECURITY_GATE')) {
-    return new ApiError(423, 'SECURITY_GATE', 'Project awaits InfoSec approval');
-  }
-  if (msg.includes('immutable ledger')) {
-    return new ApiError(403, 'FORBIDDEN', 'audit_logs is an immutable ledger');
-  }
+  if (msg.includes('DEPENDENCY_LOCKED')) return dependencyLocked();
+  if (msg.includes('SECURITY_GATE')) return securityGate();
+  if (msg.includes('immutable ledger')) return forbidden('audit_logs is an immutable ledger');
   return err;
 }
 
@@ -91,6 +79,12 @@ class PgQueries {
     } catch (err) {
       throw translateDbError(err);
     }
+  }
+
+  // ---- reference data ------------------------------------------------------
+  async listDivisions() {
+    const { rows } = await this._query('SELECT code, name FROM divisions ORDER BY code');
+    return rows;
   }
 
   // ---- users ---------------------------------------------------------------

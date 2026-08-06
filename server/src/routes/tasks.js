@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { asyncHandler } from './middleware.js';
-import { withLocked, preferUserSite } from './helpers.js';
-import { createEntity, patchEntity } from '../services/entityOps.js';
+import { withLocked, withLockedOne, preferUserSite, mountEntityCrud } from './helpers.js';
 import { notFound } from '../errors.js';
 
 export function tasksRouter() {
@@ -18,27 +17,10 @@ export function tasksRouter() {
     const repo = req.app.locals.repo;
     const task = await repo.get('task', req.params.id);
     if (!task) throw notFound(`task ${req.params.id} not found`);
-    const [decorated] = await withLocked(repo, [task]);
-    res.json(decorated);
+    res.json(await withLockedOne(repo, task));
   }));
 
-  router.post('/', asyncHandler(async (req, res) => {
-    const repo = req.app.locals.repo;
-    const created = await repo.transaction(req.user.id, (tx) =>
-      createEntity(tx, req.user, 'task', req.body),
-    );
-    const [decorated] = await withLocked(repo, [created]);
-    res.status(201).json(decorated);
-  }));
-
-  router.patch('/:id', asyncHandler(async (req, res) => {
-    const repo = req.app.locals.repo;
-    const updated = await repo.transaction(req.user.id, (tx) =>
-      patchEntity(tx, req.user, 'task', req.params.id, req.body),
-    );
-    const [decorated] = await withLocked(repo, [updated]);
-    res.json(decorated);
-  }));
+  mountEntityCrud(router, 'task', { decorate: withLockedOne });
 
   return router;
 }

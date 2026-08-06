@@ -40,6 +40,18 @@ INSERT INTO sites (code, name) VALUES
     ('saly',     'Saly Site'),
     ('hq',       'Group IT HQ');
 
+-- Risk tags that auto-route work to InfoSec (see route_security_review()).
+-- Mirrored in server/src/services/securityRouting.js:SECURITY_RISK_TAGS —
+-- both must change together.
+CREATE TABLE security_risk_tags (
+    code TEXT PRIMARY KEY
+);
+
+INSERT INTO security_risk_tags (code) VALUES
+    ('network_alteration'),
+    ('firewall_change'),
+    ('external_exposure');
+
 -- ----------------------------------------------------------------------------
 -- Users (demo-grade identity; real deployments front this with SSO)
 -- ----------------------------------------------------------------------------
@@ -226,7 +238,7 @@ DECLARE
     v_tag        TEXT;
 BEGIN
     FOREACH v_tag IN ARRAY NEW.risk_tags LOOP
-        IF v_tag IN ('network_alteration', 'firewall_change', 'external_exposure') THEN
+        IF EXISTS (SELECT 1 FROM security_risk_tags WHERE code = v_tag) THEN
             IF NOT EXISTS (
                 SELECT 1 FROM security_approvals
                 WHERE project_id = v_project_id

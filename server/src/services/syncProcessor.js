@@ -5,7 +5,7 @@
  */
 import { ApiError, validation } from '../errors.js';
 import { applyUpdate } from './occ.js';
-import { ENTITY_DEFS, createEntity, runTaskGates } from './entityOps.js';
+import { ENTITY_DEFS, assertEnums, createEntity, pickWritable, runTaskGates } from './entityOps.js';
 import { ensureSecurityRouting } from './securityRouting.js';
 
 const ENTITIES = ['task', 'project', 'roadblock'];
@@ -93,10 +93,10 @@ async function processOperation(repo, user, op) {
     }
 
     const def = ENTITY_DEFS[kind];
-    const fields = {};
-    for (const key of def.writable) {
-      if (op.fields?.[key] !== undefined) fields[key] = op.fields[key];
-    }
+    const fields = pickWritable(def, op.fields ?? {});
+    // Enum violations surface as `rejected` with error VALIDATION via the
+    // ApiError handling in processSyncBatch.
+    assertEnums(def, fields);
 
     const { outcome, next } = applyUpdate(current, {
       baseVersion: op.baseVersion,

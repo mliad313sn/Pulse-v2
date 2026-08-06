@@ -7,7 +7,6 @@
 import PptxGenJS from 'pptxgenjs';
 import PDFDocument from 'pdfkit';
 import { computeLocked } from '../services/gates.js';
-import { DIVISIONS } from '../repo/memoryRepo.js';
 
 const ACTIVE_STATUSES = ['active', 'at_risk', 'on_hold'];
 const SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -21,17 +20,30 @@ const GATE_LABEL = {
   not_required: 'No gate', pending: 'InfoSec PENDING', approved: 'InfoSec approved', rejected: 'InfoSec REJECTED',
 };
 
+function groupByProject(rows) {
+  const byProject = new Map();
+  for (const row of rows) {
+    const group = byProject.get(row.projectId);
+    if (group) group.push(row);
+    else byProject.set(row.projectId, [row]);
+  }
+  return byProject;
+}
+
 /** Collects and groups everything the deck needs. Pure data, testable. */
 export async function buildDeckData(repo) {
-  const [projects, tasks, roadblocks] = await Promise.all([
+  const [allDivisions, projects, tasks, roadblocks] = await Promise.all([
+    repo.listDivisions(),
     repo.list('project'),
     repo.list('task'),
     repo.list('roadblock'),
   ]);
   const tasksById = new Map(tasks.map((t) => [t.id, t]));
+  const tasksByProject = groupByProject(tasks);
+  const roadblocksByProject = groupByProject(roadblocks);
 
   const divisions = [];
-  for (const div of DIVISIONS) {
+  for (const div of allDivisions) {
     const divProjects = projects.filter(
       (p) => p.division === div.code && ACTIVE_STATUSES.includes(p.overallStatus),
     );
@@ -41,11 +53,11 @@ export async function buildDeckData(repo) {
       code: div.code,
       name: div.name,
       projects: divProjects.map((p) => {
-        const open = roadblocks
-          .filter((r) => r.projectId === p.id && r.status !== 'resolved')
+        const open = (roadblocksByProject.get(p.id) ?? [])
+          .filter((r) => r.status !== 'resolved')
           .sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
-        const nextActions = tasks
-          .filter((t) => t.projectId === p.id && t.status !== 'done')
+        const nextActions = (tasksByProject.get(p.id) ?? [])
+          .filter((t) => t.status !== 'done')
           .sort((a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority])
           .slice(0, 3)
           .map((t) => ({

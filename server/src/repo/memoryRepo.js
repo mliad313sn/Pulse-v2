@@ -6,6 +6,7 @@
  * internal state. Audit is an immutable push-only ledger.
  */
 import { createAuditLedger } from '../services/audit.js';
+import { TABLES } from './tables.js';
 
 const clone = (v) => (v == null ? v : structuredClone(v));
 
@@ -18,19 +19,6 @@ export const DIVISIONS = [
   { code: 'bizapps', name: 'Business Apps', description: 'ERP integration' },
   { code: 'management', name: 'Group IT Management', description: 'Executive oversight' },
 ];
-
-export const SITES = [
-  { code: 'sabodala', name: 'Sabodala Mine Site' },
-  { code: 'saly', name: 'Saly Site' },
-  { code: 'hq', name: 'Group IT HQ' },
-];
-
-const TABLE_NAMES = {
-  project: 'projects',
-  task: 'tasks',
-  roadblock: 'roadblocks',
-  approval: 'security_approvals',
-};
 
 function seedFixtures() {
   const t0 = new Date(Date.now() - 24 * 3600 * 1000).toISOString(); // "yesterday"
@@ -142,6 +130,7 @@ export class MemoryRepo {
       approval: seed.approvals,
     };
     this._syncQueue = [];
+    this._syncById = new Map();
     this._syncSeq = 0;
   }
 
@@ -156,16 +145,23 @@ export class MemoryRepo {
     }
   }
 
+  // The ledger deep-freezes its payloads, so aliasing the stored rows here is
+  // safe: stored rows are only ever replaced wholesale, never mutated in place.
   _recordAudit(action, kind, oldObj, newObj) {
     this.audit.append({
-      entityType: TABLE_NAMES[kind] ?? kind,
+      entityType: TABLES[kind] ?? kind,
       entityId: (newObj ?? oldObj)?.id ?? null,
       action,
       actorId: this._actor,
       cgeitTag: newObj?.cgeitTag ?? oldObj?.cgeitTag ?? null,
-      oldData: clone(oldObj) ?? null,
-      newData: clone(newObj) ?? null,
+      oldData: oldObj ?? null,
+      newData: newObj ?? null,
     });
+  }
+
+  // ---- reference data ------------------------------------------------------
+  async listDivisions() {
+    return clone(DIVISIONS);
   }
 
   // ---- users ---------------------------------------------------------------
@@ -201,9 +197,10 @@ export class MemoryRepo {
     if (table.some((r) => r.id === obj.id)) {
       throw new Error(`MemoryRepo: duplicate id ${obj.id} for ${kind}`);
     }
-    table.push(clone(obj));
-    this._recordAudit('INSERT', kind, null, obj);
-    return clone(obj);
+    const stored = clone(obj); // single clone: stored, audited (frozen) and returned
+    table.push(stored);
+    this._recordAudit('INSERT', kind, null, stored);
+    return stored;
   }
 
   async update(kind, obj) {
@@ -211,9 +208,10 @@ export class MemoryRepo {
     const idx = table.findIndex((r) => r.id === obj.id);
     if (idx === -1) throw new Error(`MemoryRepo: cannot update missing ${kind} ${obj.id}`);
     const old = table[idx];
-    table[idx] = clone(obj);
-    this._recordAudit('UPDATE', kind, old, obj);
-    return clone(obj);
+    const stored = clone(obj); // single clone: stored, audited (frozen) and returned
+    table[idx] = stored;
+    this._recordAudit('UPDATE', kind, old, stored);
+    return stored;
   }
 
   // ---- audit ---------------------------------------------------------------
@@ -233,11 +231,12 @@ export class MemoryRepo {
       detail: null,
     };
     this._syncQueue.push(rec);
+    this._syncById.set(rec.id, rec);
     return clone(rec);
   }
 
   async markSyncOp(id, { result, detail }) {
-    const rec = this._syncQueue.find((r) => r.id === id);
+    const rec = this._syncById.get(id);
     if (!rec) return null;
     rec.processedAt = new Date().toISOString();
     rec.result = result;

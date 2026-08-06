@@ -1,10 +1,8 @@
 import { Router } from 'express';
 import { asyncHandler } from './middleware.js';
-import { withLocked } from './helpers.js';
-import { createEntity, patchEntity } from '../services/entityOps.js';
-import { forbidden, notFound } from '../errors.js';
-
-const CREATOR_ROLES = ['division_lead', 'group_manager'];
+import { withLocked, mountEntityCrud } from './helpers.js';
+import { assertCan } from '../services/policy.js';
+import { notFound } from '../errors.js';
 
 export function projectsRouter() {
   const router = Router();
@@ -24,28 +22,13 @@ export function projectsRouter() {
     const project = await repo.get('project', req.params.id);
     if (!project) throw notFound(`project ${req.params.id} not found`);
     const tasks = await repo.list('task', { projectId: req.params.id });
-    res.json(await withLocked(repo, tasks));
+    res.json(await withLocked(repo, tasks, { projects: [project] }));
   }));
 
-  router.post('/', asyncHandler(async (req, res) => {
-    if (!CREATOR_ROLES.includes(req.user.role)) {
-      throw forbidden('Creating projects requires division_lead or group_manager role');
-    }
-    const repo = req.app.locals.repo;
-    const payload = { ownerId: req.user.id, ...req.body };
-    const created = await repo.transaction(req.user.id, (tx) =>
-      createEntity(tx, req.user, 'project', payload),
-    );
-    res.status(201).json(created);
-  }));
-
-  router.patch('/:id', asyncHandler(async (req, res) => {
-    const repo = req.app.locals.repo;
-    const updated = await repo.transaction(req.user.id, (tx) =>
-      patchEntity(tx, req.user, 'project', req.params.id, req.body),
-    );
-    res.json(updated);
-  }));
+  mountEntityCrud(router, 'project', {
+    canCreate: (user) => assertCan(user, 'project:create'),
+    buildPayload: (req) => ({ ownerId: req.user.id, ...req.body }),
+  });
 
   return router;
 }

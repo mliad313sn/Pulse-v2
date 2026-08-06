@@ -16,7 +16,7 @@ export function bootstrapRouter() {
     res.json({
       user: req.user,
       projects,
-      tasks: await withLocked(repo, tasks),
+      tasks: await withLocked(repo, tasks, { tasks, projects }),
       roadblocks,
       approvals,
       serverTime: new Date().toISOString(),

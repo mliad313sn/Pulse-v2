@@ -7,13 +7,18 @@
  *       server newer -> do not apply                                    -> 'conflict_manual'
  *   - baseVersion  >  server.version  -> impossible under normal flow   -> 'conflict_manual'
  *
+ * With `strict: true` (direct/online PATCH) the LWW fallback is disabled:
+ * ANY mismatched baseVersion is a 'conflict_manual' outcome.
+ *
  * Pure function: never mutates `current`.
  */
-export function applyUpdate(current, { baseVersion, clientUpdatedAt, fields }) {
-  const nowIso = new Date().toISOString();
+import { nowIso } from './time.js';
+
+export function applyUpdate(current, { baseVersion, clientUpdatedAt, fields }, { strict = false } = {}) {
+  const ts = nowIso();
   const applied = () => ({
     outcome: null,
-    next: { ...current, ...fields, version: current.version + 1, updatedAt: nowIso },
+    next: { ...current, ...fields, version: current.version + 1, updatedAt: ts },
   });
 
   if (typeof baseVersion !== 'number' || !Number.isInteger(baseVersion)) {
@@ -24,7 +29,7 @@ export function applyUpdate(current, { baseVersion, clientUpdatedAt, fields }) {
     return { ...applied(), outcome: 'applied' };
   }
 
-  if (baseVersion < current.version) {
+  if (!strict && baseVersion < current.version) {
     const clientTs = clientUpdatedAt ? Date.parse(clientUpdatedAt) : NaN;
     const serverTs = current.updatedAt ? Date.parse(current.updatedAt) : 0;
     if (Number.isFinite(clientTs) && clientTs > serverTs) {
@@ -33,6 +38,6 @@ export function applyUpdate(current, { baseVersion, clientUpdatedAt, fields }) {
     return { outcome: 'conflict_manual', next: current };
   }
 
-  // baseVersion ahead of the server: client state is inconsistent -> manual merge.
+  // Strict mismatch, or baseVersion ahead of the server -> manual merge.
   return { outcome: 'conflict_manual', next: current };
 }
