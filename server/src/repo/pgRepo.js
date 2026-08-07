@@ -120,6 +120,19 @@ function mapCredential(row) {
   };
 }
 
+function mapLedger(row) {
+  if (!row) return null;
+  return {
+    id: row.id, projectId: row.project_id, gate: row.gate,
+    fromStage: row.from_stage, toStage: row.to_stage,
+    projectVersion: row.project_version,
+    requestedBy: row.requested_by, requestedAt: toIso(row.requested_at),
+    decidedBy: row.decided_by, decidedAt: toIso(row.decided_at),
+    authorityType: row.authority_type, decision: row.decision, note: row.note,
+    createdAt: toIso(row.created_at),
+  };
+}
+
 function mapSession(row) {
   if (!row) return null;
   return {

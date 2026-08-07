@@ -1,21 +1,27 @@
 import { Router } from 'express';
 import { asyncHandler } from './middleware.js';
 import {
-  loadProjectAccess, mountEntityCrud, withLocked, withPm, withPmAll, withPmOne,
+  loadProjectAccess, mountEntityCrud, withLocked, withPmAll, withPmOne,
 } from './helpers.js';
 import {
   LEAD_ROLES, PROJECT_ROLES, assertCan, assertReadProject, canManageProjectWork,
   filterReadableProjects,
 } from '../services/policy.js';
-import { forbidden, notFound, validation } from '../errors.js';
+import {
+  evaluateGate, gateForStage, loadGateContext, nextStage,
+} from '../services/gateEngine.js';
+import { gateRequestWire } from './gates.js';
+import { forbidden, gateRequestPending, gateRequirementsNotMet, notFound, validation } from '../errors.js';
+import { nowIso } from '../services/time.js';
+import { randomUUID } from 'node:crypto';
 
 export function projectsRouter() {
   const router = Router();
 
   router.get('/', asyncHandler(async (req, res) => {
-    const { projects, membersByProject } = await loadProjectAccess(req.app.locals.repo);
+    const { projects, membersByProject, milestonesByProject } = await loadProjectAccess(req.app.locals.repo);
     const visible = filterReadableProjects(req.user, projects, membersByProject);
-    res.json(withPmAll(visible, membersByProject));
+    res.json(withPmAll(visible, membersByProject, milestonesByProject));
   }));
 
   router.get('/:id', asyncHandler(async (req, res) => {
@@ -25,7 +31,7 @@ export function projectsRouter() {
     const members = await repo.listProjectMembers(project.id);
     // ADR-005 concealment: unreadable -> same 404 as a missing id.
     assertReadProject(req.user, project, 'project', req.params.id, members);
-    res.json(withPm(project, members));
+    res.json(await withPmOne(repo, project));
   }));
 
   router.get('/:id/tasks', asyncHandler(async (req, res) => {
@@ -36,6 +42,110 @@ export function projectsRouter() {
     assertReadProject(req.user, project, 'project', req.params.id, members);
     const tasks = await repo.list('task', { projectId: req.params.id });
     res.json(await withLocked(repo, tasks, { projects: [project] }));
+  }));
+
+  // ---- milestones (E08 core) -----------------------------------------------
+
+  router.get('/:id/milestones', asyncHandler(async (req, res) => {
+    const repo = req.app.locals.repo;
+    const project = await repo.get('project', req.params.id);
+    if (!project) throw notFound(`project ${req.params.id} not found`);
+    const members = await repo.listProjectMembers(project.id);
+    assertReadProject(req.user, project, 'project', req.params.id, members);
+    res.json(await repo.list('milestone', { projectId: project.id }));
+  }));
+
+  // ---- gate engine (E05) ---------------------------------------------------
+
+  /** Loads project (+concealment check) and the full gate context. */
+  async function loadForGates(repo, user, id) {
+    const project = await repo.get('project', id);
+    if (!project) throw notFound(`project ${id} not found`);
+    const ctx = await loadGateContext(repo, project);
+    assertReadProject(user, project, 'project', id, ctx.members);
+    return ctx;
+  }
+
+  /**
+   * GET /api/projects/:id/gates — the War Room checklist: current stage, the
+   * next gate's requirement evaluation, and any pending gate request.
+   */
+  router.get('/:id/gates', asyncHandler(async (req, res) => {
+    const repo = req.app.locals.repo;
+    const ctx = await loadForGates(repo, req.user, req.params.id);
+    const { project } = ctx;
+    const gateDef = gateForStage(project.lifecycleStage);
+    const pending = (await repo.list('gateRequest', { projectId: project.id, status: 'PENDING' }))[0];
+
+    const out = {
+      stage: project.lifecycleStage,
+      nextStage: nextStage(project.lifecycleStage),
+      gate: gateDef?.gate ?? null,
+      requirements: [],
+      steeringRequired: gateDef?.steeringRequired ?? false,
+    };
+    if (gateDef) {
+      const evaluation = evaluateGate(gateDef, ctx);
+      out.requirements = evaluation.requirements;
+    }
+    if (pending) out.pendingRequest = gateRequestWire(pending);
+    res.json(out);
+  }));
+
+  /**
+   * POST /api/projects/:id/gates/request {note?, dispositionNote?}
+   * Requester needs manage-level authority. 422 GATE_REQUIREMENTS_NOT_MET
+   * while requirements are unmet; 409 GATE_REQUEST_PENDING if one is open.
+   */
+  router.post('/:id/gates/request', asyncHandler(async (req, res) => {
+    const repo = req.app.locals.repo;
+    const ctx = await loadForGates(repo, req.user, req.params.id);
+    const { project, members } = ctx;
+    if (!canManageProjectWork(req.user, project, members)) {
+      throw forbidden('Requesting a gate requires ADMIN, the project PM, or a DIVISION_LEAD of its division');
+    }
+    const gateDef = gateForStage(project.lifecycleStage);
+    if (!gateDef) {
+      throw validation(`Project is ${project.lifecycleStage}: no further gate exists`);
+    }
+    const { note, dispositionNote } = req.body ?? {};
+    const pending = (await repo.list('gateRequest', { projectId: project.id, status: 'PENDING' }))[0];
+    if (pending) throw gateRequestPending(pending.id);
+
+    const evaluation = evaluateGate(gateDef, ctx, { dispositionNote });
+    if (!evaluation.satisfied) {
+      throw gateRequirementsNotMet(evaluation.missing);
+    }
+
+    const row = {
+      id: randomUUID(),
+      projectId: project.id,
+      gate: gateDef.gate,
+      fromStage: gateDef.fromStage,
+      toStage: gateDef.toStage,
+      requestedBy: req.user.id,
+      requestedAt: nowIso(),
+      note: note ?? null,
+      dispositionNote: dispositionNote ?? null,
+      status: 'PENDING',
+      decidedBy: null,
+      decidedAt: null,
+      decisionNote: null,
+    };
+    const created = await repo.transaction(req.user.id, (tx) => tx.insert('gateRequest', row));
+    res.status(201).json(gateRequestWire(created));
+  }));
+
+  // ---- approval ledger (E05, invariant 11) ---------------------------------
+
+  /** GET /api/projects/:id/ledger — chronological, read-only. No mutation routes exist. */
+  router.get('/:id/ledger', asyncHandler(async (req, res) => {
+    const repo = req.app.locals.repo;
+    const project = await repo.get('project', req.params.id);
+    if (!project) throw notFound(`project ${req.params.id} not found`);
+    const members = await repo.listProjectMembers(project.id);
+    assertReadProject(req.user, project, 'project', req.params.id, members);
+    res.json(await repo.listLedger({ projectId: project.id }));
   }));
 
   // ---- project membership (E04) --------------------------------------------

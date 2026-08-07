@@ -7,6 +7,7 @@
 import PptxGenJS from 'pptxgenjs';
 import PDFDocument from 'pdfkit';
 import { computeLocked } from '../services/gates.js';
+import { computeProgress } from '../services/progress.js';
 import { filterReadableProjects } from '../services/policy.js';
 import { groupMembers } from '../routes/helpers.js';
 
@@ -33,18 +34,37 @@ function groupByProject(rows) {
 }
 
 /**
+ * The next open milestone: earliest due (forecast, falling back to baseline)
+ * among not-DONE/not-CANCELLED milestones; undated ones sort last.
+ */
+function nextMilestone(milestones) {
+  const open = milestones.filter((m) => m.status !== 'DONE' && m.status !== 'CANCELLED');
+  if (open.length === 0) return null;
+  const due = (m) => m.forecastDue ?? m.baselineDue ?? '9999-12-31';
+  const next = [...open].sort((a, b) => due(a).localeCompare(due(b)))[0];
+  return {
+    id: next.id,
+    title: next.title,
+    type: next.type,
+    status: next.status,
+    due: next.forecastDue ?? next.baselineDue ?? null,
+  };
+}
+
+/**
  * Collects and groups everything the deck needs. Pure data, testable.
  * `forUser` is the REQUESTING user: projects concealed from them (ADR-005
  * classification) are excluded from the deck — and so are their tasks and
  * roadblocks, because everything below is grouped under the project.
  */
 export async function buildDeckData(repo, forUser) {
-  const [allDivisions, allProjects, allMembers, tasks, roadblocks] = await Promise.all([
+  const [allDivisions, allProjects, allMembers, tasks, roadblocks, milestones] = await Promise.all([
     repo.listDivisions(),
     repo.list('project'),
     repo.listProjectMembers(),
     repo.list('task'),
     repo.list('roadblock'),
+    repo.list('milestone'),
   ]);
   // Membership-based classification + enterprise access (E04/E01).
   const membersByProject = groupMembers(allMembers);
@@ -52,6 +72,7 @@ export async function buildDeckData(repo, forUser) {
   const tasksById = new Map(tasks.map((t) => [t.id, t]));
   const tasksByProject = groupByProject(tasks);
   const roadblocksByProject = groupByProject(roadblocks);
+  const milestonesByProject = groupByProject(milestones);
 
   const divisions = [];
   for (const div of allDivisions) {
@@ -78,12 +99,17 @@ export async function buildDeckData(repo, forUser) {
             priority: t.priority,
             locked: computeLocked(t, tasksById, p),
           }));
+        const projectMilestones = milestonesByProject.get(p.id) ?? [];
         return {
           id: p.id,
           name: p.name,
           site: p.site,
           overallStatus: p.overallStatus,
           securityGateStatus: p.securityGateStatus,
+          // E08: computed progress + the next open milestone (E05 gates surface
+          // GO_LIVE/readiness milestones through here for the exec view).
+          progress: computeProgress(projectMilestones),
+          nextMilestone: nextMilestone(projectMilestones),
           openRoadblockCount: open.length,
           blockers: open.slice(0, 3).map((r) => ({
             id: r.id, description: r.description, severity: r.severity, status: r.status,

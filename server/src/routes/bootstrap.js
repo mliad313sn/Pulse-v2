@@ -9,7 +9,7 @@ export function bootstrapRouter() {
   const router = Router();
   router.get('/', asyncHandler(async (req, res) => {
     const repo = req.app.locals.repo;
-    const [{ projects, membersByProject }, tasks, roadblocks, approvals, pillars, portfolios, programs] =
+    const [{ projects, membersByProject, milestonesByProject }, tasks, roadblocks, approvals, pillars, portfolios, programs] =
       await Promise.all([
         loadProjectAccess(repo),
         repo.list('task'),
@@ -24,12 +24,16 @@ export function bootstrapRouter() {
     const visibleProjects = filterReadableProjects(req.user, projects, membersByProject);
     const visible = readableProjectIds(req.user, projects, membersByProject);
     const visibleTasks = tasks.filter((t) => visible.has(t.projectId));
+    const milestones = [...milestonesByProject.entries()]
+      .filter(([pid]) => visible.has(pid))
+      .flatMap(([, rows]) => rows);
     res.json({
       user: publicUser(req.user),
-      projects: withPmAll(visibleProjects, membersByProject),
+      projects: withPmAll(visibleProjects, membersByProject, milestonesByProject),
       tasks: await withLocked(repo, visibleTasks, { tasks, projects }),
       roadblocks: roadblocks.filter((r) => visible.has(r.projectId)),
       approvals: approvals.filter((a) => visible.has(a.projectId)),
+      milestones,
       pillars,
       portfolios,
       programs,

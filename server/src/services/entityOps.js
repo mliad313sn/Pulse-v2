@@ -7,7 +7,11 @@
  *     transaction via the concurrency-safe per-year sequence
  *     (repo.nextProjectCodeSeq -> project_code_sequences w/ SELECT..FOR UPDATE
  *     on Postgres); immutable afterwards (PATCH attempts -> 400 VALIDATION).
- *   - lifecycleStage single-step guard (gate engine proper lands in E05).
+ * E05/E08 additions:
+ *   - lifecycleStage is gate-governed (services/gateEngine.js); direct writes
+ *     are refused except the audited ADMIN one-step-backward correction.
+ *   - operatingStatus transition rules (CANCELLED terminal + reason fields).
+ *   - milestones (weighted, typed) feeding the COMPUTED project progress.
  *   - membership-based write policy (canWriteTask/canWriteRoadblock/
  *     canManageProjectWork) replacing the v1 any-writer-writes-anything model.
  */
@@ -387,7 +391,8 @@ export async function createEntity(repo, actor, kind, payload, options = {}) {
  * Direct (online) PATCH — strict OCC per contract invariant 1:
  * body must carry `version` (base version); mismatch -> 409 with serverState.
  * Task status transitions run the governance gates (423s); project
- * lifecycleStage moves one step at a time (400 INVALID_LIFECYCLE_TRANSITION).
+ * lifecycleStage is gate-governed (E05): direct writes are 400 VALIDATION
+ * except the audited ADMIN one-step-backward correction.
  * Returns the updated entity.
  */
 export async function patchEntity(repo, actor, kind, id, body) {

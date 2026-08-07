@@ -221,6 +221,15 @@ export function ScaleIcon({ className }: IconProps) {
   );
 }
 
+export function PencilIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="M4.5 19.5l.9-3.6L16.8 4.5a2.05 2.05 0 0 1 2.9 2.9L8.3 18.8l-3.8.7z" />
+      <path d="M14.6 6.7l2.9 2.9" />
+    </svg>
+  );
+}
+
 export function MergeIcon({ className }: IconProps) {
   return (
     <svg {...base(className)}>

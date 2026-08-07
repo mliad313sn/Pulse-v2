@@ -1,4 +1,4 @@
-# OpsPM360 — API Contract (v3 — org admin, portfolios, project membership, enterprise access)
+# OpsPM360 — API Contract (v4 — gate engine G0–G5, approval ledger, milestones, computed progress)
 
 Shared contract between `server/` (Node.js/Express) and `web/` (Next.js PWA).
 Both sides MUST conform to this document. Base URL: `http://localhost:4000/api`.
@@ -136,7 +136,7 @@ is audited. No delete endpoints exist.
 | `POST /api/projects/:id/members` `{userId, role}` | `201 {projectId, userId, role}` — **ADMIN, the project PM, or DIVISION_LEAD of the project's division**; role `PM` swaps the incumbent atomically (both audited); VIEWER as PM/WORKSTREAM_LEAD, unknown user, bad role, duplicate → `400 VALIDATION`; unauthorized manager → `403` |
 | `DELETE /api/projects/:id/members/:userId/:role` | `204`; missing membership → `404` |
 
-## Project codes & lifecycle (E04)
+## Project codes & lifecycle (E04/E05)
 
 - `Project.code`: server-generated `PRJ-YYYY-NNN` (year of creation, sequence
   zero-padded to ≥3 digits), **unique and immutable**. Allocation is
@@ -145,12 +145,104 @@ is audited. No delete endpoints exist.
   a different value → `400 VALIDATION` (echoing the identical value is
   tolerated). Seed projects carry `PRJ-2026-001..003`.
 - `Project.lifecycleStage`: `IDEA|INITIATION|PLANNING|EXECUTION|DEPLOYMENT|RUN|CLOSED`
-  (default `IDEA`). THIS slice is data + validation only: a PATCH (or sync
-  update) may move the stage exactly ONE step forward or backward — skips →
-  `400 INVALID_LIFECYCLE_TRANSITION` with `detail {from, to}`. The G0–G5 gate
-  engine lands in E05.
+  (default `IDEA`). **Gate-governed since E05** (replaces the v3 one-step
+  guard): direct PATCH/sync writes of `lifecycleStage` → `400 VALIDATION`
+  ("use the gate process", `detail {from, to}`) with ONE exception — **ADMIN
+  may move exactly one stage backward** (controlled correction; audited as
+  `LIFECYCLE_CORRECTION` on top of the regular UPDATE row). Forward movement
+  happens ONLY through gate requests + authorized decisions (below).
 - `Project.operatingStatus`: `NOT_STARTED|IN_PROGRESS|ON_HOLD|COMPLETED|CANCELLED`
-  (default `NOT_STARTED`), freely movable (enum-validated).
+  (default `NOT_STARTED`), enum-validated with transition rules (plan §12.2):
+  - → `ON_HOLD` requires `holdReason` (in the same payload or already set),
+    else `400 VALIDATION {field: "holdReason"}`;
+  - → `CANCELLED` requires `cancelReason` likewise, and is **TERMINAL**: any
+    later operating-status change → `400 VALIDATION`. Other fields stay
+    editable on a cancelled project.
+
+## Gate engine G0–G5 (E05, plan §13 — invariants 8-10)
+
+Stage → gate: `IDEA`→G0, `INITIATION`→G1, `PLANNING`→G2, `EXECUTION`→G3,
+`DEPLOYMENT`→G4, `RUN`→G5, `CLOSED`→none. Requirements (each evaluated
+server-side at request time; wire shape `{key, label, satisfied, detail?}`):
+
+| Gate | Transition | Requirement keys |
+|---|---|---|
+| G0 | IDEA→INITIATION | `title`, `description`, `sponsor`, `owner` |
+| G1 | INITIATION→PLANNING | `description`, `sponsor`, `pm` (PM member exists), `targetDate`, `site` (site or sites[]), `division` |
+| G2 | PLANNING→EXECUTION | `milestones` (≥1 non-cancelled), `team` (PM + ≥1 more member), `baseline` (startDate+targetDate), `acceptanceCriteria` — **steering approver required** |
+| G3 | EXECUTION→DEPLOYMENT | `deploymentPlan`, `criticalRoadblocks` (no open critical roadblocks — severity `critical` & status ≠ `resolved`) |
+| G4 | DEPLOYMENT→RUN | `goLive` (a GO_LIVE milestone with status DONE), `supportOwner` |
+| G5 | RUN→CLOSED | `actualEndDate`, `closureSummary`, `openWork` (no open — todo/in_progress/blocked — tasks and no unresolved roadblocks, OR an explicit `dispositionNote` in the request) |
+
+| Endpoint | Behavior |
+|---|---|
+| `GET /api/projects/:id/gates` | `200 {stage, nextStage, gate (G0..G5\|null), requirements[], steeringRequired, pendingRequest?}` — any reader (VIEWER included); concealed → 404 |
+| `POST /api/projects/:id/gates/request` `{note?, dispositionNote?}` | `201` gateRequest — requester must have manage-level authority (403 otherwise); `422 GATE_REQUIREMENTS_NOT_MET` with `detail.missing[]` while unmet; `409 GATE_REQUEST_PENDING` if one is already open (partial unique index backstop); CLOSED project → `400` |
+| `GET /api/gate-requests?status=PENDING` | requests of readable projects only |
+| `POST /api/gate-requests/:id/decision` `{decision: 'APPROVED'\|'REJECTED', note?}` | `200 {gateRequest, project, ledgerEntry}` — see approver rules; APPROVED applies the lifecycle transition + appends the ledger entry in **one transaction**; REJECTED appends the ledger entry, stage unchanged; decided requests cannot be re-decided (`400`); stale request (stage moved since) → `400` |
+
+`GateRequest`: {id, projectId, gate, fromStage, toStage, requestedBy,
+requestedAt, note, dispositionNote, status (`PENDING|APPROVED|REJECTED`),
+decidedBy, decidedAt, decisionNote}.
+
+**Approver rules** (server-enforced, invariant 4 + 10):
+- **G2** requires `privileges` to include `steering` — an **ADMIN without
+  steering is DENIED** `403 STEERING_APPROVAL_REQUIRED`. Recorded authority:
+  `STEERING`.
+- Other gates: a steering holder (`STEERING`), ADMIN (`ADMIN`), or a
+  DIVISION_LEAD of the project's division (`DIVISION_LEAD`); anyone else
+  `403 FORBIDDEN`.
+- The **requester can never decide their own request** → `403 FORBIDDEN`.
+- Seed: Aminata Fall holds `steering`; Troy (ADMIN) does NOT — the separation
+  is proven by tests.
+
+## Approval ledger (E05, plan §14 — invariant 11)
+
+`LedgerEntry`: {id, projectId, gate, fromStage, toStage, **projectVersion**
+(the project's version at decision time, pre-transition), requestedBy,
+requestedAt, decidedBy, decidedAt, authorityType
+(`STEERING|ADMIN|DIVISION_LEAD`), decision (`APPROVED|REJECTED`), note,
+createdAt}.
+
+- `GET /api/projects/:id/ledger` → chronological entries (concealed → 404).
+- **IMMUTABLE**: no update/delete endpoint exists anywhere; the DB trigger
+  `trg_approval_ledger_immutable` forbids UPDATE/DELETE (like `audit_logs`);
+  the MemoryRepo ledger is push-only with frozen entries.
+
+## Milestones (E08 core)
+
+`Milestone`: id, projectId, title, description?, type
+(`STANDARD|SECURITY_GATE|SITE_READINESS|UAT|GO_LIVE|GOVERNANCE_GATE|OPERATIONAL_HANDOVER`,
+default `STANDARD`), status (`NOT_STARTED|IN_PROGRESS|DONE|SLIPPED|CANCELLED`,
+default `NOT_STARTED`), ownerId?, baselineDue?, forecastDue?,
+actualCompleted? (all ISO dates `YYYY-MM-DD`), **weight** (integer ≥ 1,
+default 1), version, updatedAt, createdAt.
+
+| Endpoint | Behavior |
+|---|---|
+| `GET /api/projects/:id/milestones` | project's milestones (concealed → 404) |
+| `GET /api/milestones` (`?projectId=`) | classification + enterprise-access filtered |
+| `POST /api/milestones` | create — **manage-level authority** on the project (ADMIN/PM/division lead); VIEWER and non-managers 403; unknown projectId/ownerId, bad enum/weight/date → 400 |
+| `PATCH /api/milestones/:id` | manage-level **OR the milestone owner**; OCC `version` required (400/409); concealed project → uniform 404 |
+
+Milestones ride the offline sync protocol (`entity: "milestone"`) with the
+same write policy, and appear in `GET /api/bootstrap` (concealment-filtered).
+
+## Computed progress (E08, plan §23 — invariant 15)
+
+Projects carry a derived, **never-writable** wire field:
+
+```json
+"progress": { "percent": 22, "completedWeight": 2, "activeWeight": 9,
+              "explanation": "2 of 9 weighted milestone points complete (1/3 active milestones DONE; 1 cancelled excluded)" }
+```
+
+`percent = sum(weight of DONE non-CANCELLED) / sum(weight of non-CANCELLED) * 100`
+(rounded to integer). CANCELLED milestones leave numerator AND denominator.
+No milestones → `{percent: null, completedWeight: 0, activeWeight: 0,
+explanation: "No milestones yet"}`; all cancelled → percent null. Attempts to
+write `progress` are silently ignored (not a writable field). Appears on every
+project read (list, detail, bootstrap, deck data).
 
 ## Error envelope
 ```json
@@ -170,8 +262,10 @@ is audited. No delete endpoints exist.
 | 409  | `VERSION_CONFLICT`   | OCC mismatch on direct (online) update                      |
 | 423  | `DEPENDENCY_LOCKED`  | task advance blocked by incomplete prerequisite             |
 | 423  | `SECURITY_GATE`      | task advance blocked by pending InfoSec approval            |
-| 400  | `INVALID_LIFECYCLE_TRANSITION` | lifecycleStage moved more than one step (`detail {from, to}`) |
-| 400  | `VALIDATION`         | bad payload (incl. immutable `code`, VIEWER-as-PM, unknown refs) |
+| 422  | `GATE_REQUIREMENTS_NOT_MET` | gate request while requirements unmet (`detail.missing[]`) |
+| 403  | `STEERING_APPROVAL_REQUIRED` | G2 decision without the `steering` privilege (even ADMIN) |
+| 409  | `GATE_REQUEST_PENDING` | a gate request is already pending (`detail.pendingRequestId`) |
+| 400  | `VALIDATION`         | bad payload (incl. immutable `code`, VIEWER-as-PM, unknown refs, direct `lifecycleStage` writes, missing cancel/hold reason) |
 
 ## Entities (JSON, camelCase over the wire)
 `Project`: id, **code** (PRJ-YYYY-NNN, immutable), name, description,
@@ -179,10 +273,15 @@ division, site (primary), **sites[]** (additional site codes),
 **engagedDivisions[]**, cgeitTag, strategicTag,
 riskTags[], classification (`internal|restricted|confidential`),
 overallStatus (`draft|active|at_risk|on_hold|complete`),
-**lifecycleStage**, **operatingStatus**,
+**lifecycleStage** (gate-governed), **operatingStatus** (transition rules),
 securityGateStatus (`not_required|pending|approved|rejected`), ownerId,
 **portfolioId?**, **programId?**, **sponsorId?**,
+**startDate?**, **targetDate?**, **actualEndDate?** (ISO dates `YYYY-MM-DD`),
+**acceptanceCriteria?**, **deploymentPlan?**, **supportOwnerId?**,
+**closureSummary?**, **cancelReason?**, **holdReason?** (all nullable;
+writable per manage-level policy; unknown supportOwnerId → 400),
 **pmId** (derived — the single PM member's userId, or null),
+**progress** (derived — see Computed progress; never writable),
 version, updatedAt, createdAt.
 
 `Task`: id, projectId, title, description, division, site, assigneeId,
@@ -201,12 +300,15 @@ version, updatedAt, createdAt.
 ## Endpoints (business — all require a session; classification filter applies to every read)
 | Method & path | Notes |
 |---|---|
-| `GET /api/bootstrap` | `{ user, projects, tasks, roadblocks, approvals, pillars, portfolios, programs, serverTime }` — everything the client caches into IndexedDB (concealed projects and their children excluded; projects carry `pmId`) |
+| `GET /api/bootstrap` | `{ user, projects, tasks, roadblocks, approvals, milestones, pillars, portfolios, programs, serverTime }` — everything the client caches into IndexedDB (concealed projects and their children excluded; projects carry `pmId` + `progress`) |
 | `GET /api/projects` / `GET /api/projects/:id` | classification + enterprise-access filtered; concealed → uniform 404; projects carry derived `pmId` |
 | `POST /api/projects` | create (ADMIN or DIVISION_LEAD); body = Project fields minus server-managed (`code` is generated); non-ADMIN classification forced `internal`; unknown portfolioId/programId/sponsorId/engagedDivisions/sites → 400 |
-| `PATCH /api/projects/:id` | body must include `version` (the base version); OCC applies; requires manage-level authority (ADMIN/PM/division lead — else 403); classification change ADMIN-only (403); `code` immutable (400); lifecycleStage single-step (400 INVALID_LIFECYCLE_TRANSITION) |
+| `PATCH /api/projects/:id` | body must include `version` (the base version); OCC applies; requires manage-level authority (ADMIN/PM/division lead — else 403); classification change ADMIN-only (403); `code` immutable (400); lifecycleStage gate-governed (400 VALIDATION except ADMIN one-step-backward); operatingStatus transition rules (see Project codes & lifecycle) |
 | `GET /api/projects/:id/tasks` · `GET /api/tasks` | tasks incl. derived `locked`; tasks of concealed projects hidden |
 | `GET /api/projects/:id/members` · `POST /api/projects/:id/members` · `DELETE /api/projects/:id/members/:userId/:role` | see Project membership endpoints |
+| `GET /api/projects/:id/milestones` · `GET/POST /api/milestones` · `PATCH /api/milestones/:id` | see Milestones (E08 core) |
+| `GET /api/projects/:id/gates` · `POST /api/projects/:id/gates/request` · `GET /api/gate-requests` · `POST /api/gate-requests/:id/decision` | see Gate engine (E05) |
+| `GET /api/projects/:id/ledger` | see Approval ledger (immutable, read-only) |
 | `POST /api/tasks` | create — manage-level, contributing member, or project owner/sponsor (else 403; VIEWER always 403) |
 | `PATCH /api/tasks/:id` | body must include `version`; E04 write policy (403) + OCC + gate checks (409/423) |
 | `GET /api/roadblocks` · `POST /api/roadblocks` | POST body: projectId, taskId?, description, severity? — any writer who can read the project (becomes reporter) |
@@ -224,7 +326,7 @@ Request:
 ```json
 { "clientId": "device-uuid", "operations": [ {
     "opId": "client-generated-uuid",
-    "entity": "task" | "project" | "roadblock",
+    "entity": "task" | "project" | "roadblock" | "milestone",
     "entityId": "uuid",
     "op": "update" | "create",
     "baseVersion": 3,
@@ -255,7 +357,9 @@ Response:
   management, org/pillar admin and classification changes; ADMIN/DIVISION_LEAD
   project + portfolio/program create; E04 membership-based write policy on
   projects/tasks/roadblocks; one-PM-per-project with no VIEWER leads;
-  immutable project codes; single-step lifecycle transitions;
+  immutable project codes; gate-governed lifecycle transitions with
+  `steering`-only G2 decisions and the immutable approval ledger;
+  manage-or-owner milestone writes; computed (never-writable) progress;
   `security_reviewer`-privilege approval decisions; classification AND
   enterprise-access concealment on every read path.
 - **Presentation-level defaulting** (not a wall): `ops`-division users get
@@ -271,4 +375,9 @@ Response:
 5. Every mutation is audit-logged; audit rows are immutable.
 6. At most one `PM` member per project (partial unique index); VIEWER users never hold PM/WORKSTREAM_LEAD (trigger backstop).
 7. Project `code` is immutable after creation (trigger backstop) and allocated race-free per year.
-8. `lifecycleStage` moves one step at a time (service-enforced; E05 replaces this with the real gate engine).
+8. `lifecycleStage` moves ONLY through the gate engine (G0–G5 requirements checked server-side at request time; approvals authority-checked; skips impossible). The single direct write is the audited ADMIN one-step-backward correction.
+9. G2 (PLANNING→EXECUTION) decisions require the `steering` privilege — independent of ADMIN.
+10. `approval_ledger` rows are immutable (no mutation endpoints; DB trigger forbids UPDATE/DELETE; MemoryRepo push-only).
+11. At most one PENDING gate request per project (partial unique index backstop).
+12. `operatingStatus` CANCELLED is terminal and requires `cancelReason`; ON_HOLD requires `holdReason`.
+13. Project `progress` is computed from milestone weights — no write path exists.

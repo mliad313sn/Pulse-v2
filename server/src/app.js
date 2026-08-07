@@ -16,6 +16,8 @@ import { divisionsRouter, orgRouter, sitesRouter } from './routes/org.js';
 import { pillarsRouter, portfoliosRouter, programsRouter } from './routes/portfolios.js';
 import { bootstrapRouter } from './routes/bootstrap.js';
 import { projectsRouter } from './routes/projects.js';
+import { milestonesRouter } from './routes/milestones.js';
+import { gateRequestsRouter } from './routes/gates.js';
 import { tasksRouter } from './routes/tasks.js';
 import { roadblocksRouter } from './routes/roadblocks.js';
 import { approvalsRouter } from './routes/approvals.js';
@@ -64,6 +66,8 @@ export function createApp({ repo, authProvider = createEntraProvider() }) {
   app.use('/api/programs', programsRouter());
   app.use('/api/bootstrap', bootstrapRouter());
   app.use('/api/projects', projectsRouter());
+  app.use('/api/milestones', milestonesRouter()); // E08 core
+  app.use('/api/gate-requests', gateRequestsRouter()); // E05 gate decisions
   app.use('/api/tasks', tasksRouter());
   app.use('/api/roadblocks', roadblocksRouter());
   app.use('/api/approvals', approvalsRouter());

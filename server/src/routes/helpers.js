@@ -1,43 +1,68 @@
 import { asyncHandler } from './middleware.js';
 import { computeLocked } from '../services/gates.js';
+import { computeProgress } from '../services/progress.js';
 import { createEntity, patchEntity } from '../services/entityOps.js';
 
 /** Groups membership rows by projectId (Map projectId -> rows). */
 export function groupMembers(members) {
+  return groupByProject(members);
+}
+
+/** Groups any projectId-bearing rows into a Map projectId -> rows. */
+export function groupByProject(rows) {
   const byProject = new Map();
-  for (const m of members) {
-    const list = byProject.get(m.projectId);
-    if (list) list.push(m);
-    else byProject.set(m.projectId, [m]);
+  for (const r of rows) {
+    const list = byProject.get(r.projectId);
+    if (list) list.push(r);
+    else byProject.set(r.projectId, [r]);
   }
   return byProject;
 }
 
 /**
- * Loads everything the read-side policy needs in one place: the project list
- * plus membership rows grouped by project (classification is membership-based
- * and enterprise access needs member/owner/sponsor checks — E04/E01).
+ * Loads everything the read-side policy + wire decoration need in one place:
+ * the project list, membership rows grouped by project (classification is
+ * membership-based and enterprise access needs member/owner/sponsor checks —
+ * E04/E01), and milestones grouped by project (derived `progress` — E08).
  */
 export async function loadProjectAccess(repo) {
-  const [projects, members] = await Promise.all([
+  const [projects, members, milestones] = await Promise.all([
     repo.list('project'),
     repo.listProjectMembers(),
+    repo.list('milestone'),
   ]);
-  return { projects, membersByProject: groupMembers(members) };
+  return {
+    projects,
+    membersByProject: groupMembers(members),
+    milestonesByProject: groupByProject(milestones),
+  };
 }
 
-/** Wire decoration: derived `pmId` (the single PM member, or null). */
-export function withPm(project, members = []) {
-  return { ...project, pmId: members.find((m) => m.role === 'PM')?.userId ?? null };
+/**
+ * Wire decoration: derived `pmId` (the single PM member, or null) and the
+ * COMPUTED `progress` block (plan §23, invariant 15 — never writable; the
+ * field is not in ENTITY_DEFS.project.writable so PATCH/sync ignore it).
+ */
+export function withPm(project, members = [], milestones = []) {
+  return {
+    ...project,
+    pmId: members.find((m) => m.role === 'PM')?.userId ?? null,
+    progress: computeProgress(milestones),
+  };
 }
 
-export function withPmAll(projects, membersByProject) {
-  return projects.map((p) => withPm(p, membersByProject.get(p.id) ?? []));
+export function withPmAll(projects, membersByProject, milestonesByProject = new Map()) {
+  return projects.map((p) =>
+    withPm(p, membersByProject.get(p.id) ?? [], milestonesByProject.get(p.id) ?? []));
 }
 
-/** Single-project variant fetching its own members. */
+/** Single-project variant fetching its own members + milestones. */
 export async function withPmOne(repo, project) {
-  return withPm(project, await repo.listProjectMembers(project.id));
+  const [members, milestones] = await Promise.all([
+    repo.listProjectMembers(project.id),
+    repo.list('milestone', { projectId: project.id }),
+  ]);
+  return withPm(project, members, milestones);
 }
 
 /**

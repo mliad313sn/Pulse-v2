@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: OpsPM360 API
-  version: "1.1.0"
+  version: "1.2.0"
   description: |
     Offline-first project portfolio management for multi-site mining IT operations.
     Auth: server-side sessions — POST /auth/login sets the HttpOnly `ppm_session`
@@ -14,8 +14,11 @@ info:
     E01/E04: org admin (sites/divisions/org tree), portfolio foundations
     (pillars/portfolios/programs), project membership (one PM per project;
     membership-based writes and classification), server-generated immutable
-    PRJ-YYYY-NNN codes, single-step lifecycle stages, and per-user enterprise
-    access scoping.
+    PRJ-YYYY-NNN codes, and per-user enterprise access scoping.
+    E05/E08: G0-G5 gate engine (lifecycleStage only moves through gate
+    requests + authorized decisions; G2 demands the steering privilege),
+    immutable approval ledger, weighted milestones, and COMPUTED project
+    progress (never writable).
 servers:
   - url: http://localhost:4000/api
 tags:
@@ -25,6 +28,8 @@ tags:
   - name: org
   - name: portfolios
   - name: projects
+  - name: milestones
+  - name: gates
   - name: tasks
   - name: roadblocks
   - name: approvals
@@ -645,6 +650,9 @@ paths:
                   approvals:
                     type: array
                     items: { $ref: "#/components/schemas/SecurityApproval" }
+                  milestones:
+                    type: array
+                    items: { $ref: "#/components/schemas/Milestone" }
                   pillars:
                     type: array
                     items: { $ref: "#/components/schemas/StrategicPillar" }
@@ -733,6 +741,202 @@ paths:
               schema:
                 type: array
                 items: { $ref: "#/components/schemas/Task" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/milestones:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    get:
+      tags: [milestones]
+      summary: Milestones of a project (concealed projects 404)
+      responses:
+        "200":
+          description: Milestones
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Milestone" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/gates:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    get:
+      tags: [gates]
+      summary: Gate status for the project's current stage (War Room checklist)
+      responses:
+        "200":
+          description: Current stage, next gate requirements, and any pending request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GateStatus" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/gates/request:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    post:
+      tags: [gates]
+      summary: Request the next gate (manage-level authority required)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string }
+                dispositionNote:
+                  type: string
+                  description: G5 only — explicit disposition of outstanding open work
+      responses:
+        "201":
+          description: Pending gate request created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GateRequest" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: GATE_REQUEST_PENDING — one is already open (detail.pendingRequestId)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: GATE_REQUIREMENTS_NOT_MET — detail.missing lists {key, label, detail?}
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /projects/{id}/ledger:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    get:
+      tags: [gates]
+      summary: Immutable approval ledger of the project (chronological; no mutation routes exist)
+      responses:
+        "200":
+          description: Ledger entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/LedgerEntry" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /milestones:
+    get:
+      tags: [milestones]
+      summary: List milestones (classification/enterprise-filtered; optional ?projectId=)
+      parameters:
+        - name: projectId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Milestones
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Milestone" }
+    post:
+      tags: [milestones]
+      summary: Create a milestone (manage-level authority on the project)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MilestoneCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Milestone" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /milestones/{id}:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    patch:
+      tags: [milestones]
+      summary: Update a milestone (manage-level OR the milestone owner; OCC `version` required)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MilestonePatch" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Milestone" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/VersionConflict" }
+
+  /gate-requests:
+    get:
+      tags: [gates]
+      summary: List gate requests (scoped to readable projects; optional ?status=PENDING)
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [PENDING, APPROVED, REJECTED] }
+      responses:
+        "200":
+          description: Gate requests
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/GateRequest" }
+
+  /gate-requests/{id}/decision:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    post:
+      tags: [gates]
+      summary: >
+        Decide a pending gate request. G2 requires the steering privilege (an
+        ADMIN without it gets 403 STEERING_APPROVAL_REQUIRED); other gates
+        accept ADMIN, a steering holder, or a DIVISION_LEAD of the project's
+        division. The requester can never decide their own request. APPROVED
+        applies the lifecycle transition + appends the ledger entry in one
+        transaction; REJECTED appends the ledger entry only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [APPROVED, REJECTED] }
+                note: { type: string }
+      responses:
+        "200":
+          description: Decision applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  gateRequest: { $ref: "#/components/schemas/GateRequest" }
+                  project: { $ref: "#/components/schemas/Project" }
+                  ledgerEntry: { $ref: "#/components/schemas/LedgerEntry" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403":
+          description: FORBIDDEN (self-decision / no authority) or STEERING_APPROVAL_REQUIRED (G2)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /projects/{id}/members:
@@ -1078,7 +1282,8 @@ components:
           type: string
           enum: [AUTH_REQUIRED, AUTH_FAILED, ACCOUNT_LOCKED, ACCOUNT_DISABLED, RATE_LIMITED,
                  PASSWORD_CHANGE_REQUIRED, NOT_CONFIGURED, FORBIDDEN, NOT_FOUND, VERSION_CONFLICT,
-                 DEPENDENCY_LOCKED, SECURITY_GATE, INVALID_LIFECYCLE_TRANSITION, VALIDATION,
+                 DEPENDENCY_LOCKED, SECURITY_GATE, VALIDATION,
+                 GATE_REQUIREMENTS_NOT_MET, STEERING_APPROVAL_REQUIRED, GATE_REQUEST_PENDING,
                  INTERNAL]
         message: { type: string }
         detail:
@@ -1138,23 +1343,55 @@ components:
         lifecycleStage:
           type: string
           enum: [IDEA, INITIATION, PLANNING, EXECUTION, DEPLOYMENT, RUN, CLOSED]
-          description: Moves one step at a time (400 INVALID_LIFECYCLE_TRANSITION on skips); gate engine in E05
+          description: >
+            Gate-governed (E05): forward movement only through
+            POST /projects/{id}/gates/request + an authorized decision.
+            Direct PATCH is 400 VALIDATION except the audited ADMIN
+            one-step-backward correction.
         operatingStatus:
           type: string
           enum: [NOT_STARTED, IN_PROGRESS, ON_HOLD, COMPLETED, CANCELLED]
+          description: >
+            -> ON_HOLD requires holdReason; -> CANCELLED requires cancelReason
+            and is TERMINAL (any later operating-status change is 400).
         securityGateStatus: { type: string, enum: [not_required, pending, approved, rejected] }
         ownerId: { type: string, format: uuid, nullable: true }
         portfolioId: { type: string, format: uuid, nullable: true }
         programId: { type: string, format: uuid, nullable: true }
         sponsorId: { type: string, format: uuid, nullable: true }
+        startDate: { type: string, format: date, nullable: true }
+        targetDate: { type: string, format: date, nullable: true }
+        actualEndDate: { type: string, format: date, nullable: true }
+        acceptanceCriteria: { type: string, nullable: true }
+        deploymentPlan: { type: string, nullable: true }
+        supportOwnerId: { type: string, format: uuid, nullable: true }
+        closureSummary: { type: string, nullable: true }
+        cancelReason: { type: string, nullable: true }
+        holdReason: { type: string, nullable: true }
         pmId:
           type: string
           format: uuid
           nullable: true
           description: Derived — the single PM member's userId, or null
+        progress: { $ref: "#/components/schemas/Progress" }
         version: { type: integer }
         updatedAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time }
+
+    Progress:
+      type: object
+      description: >
+        COMPUTED (plan §23, invariant 15) — never writable. percent =
+        sum(weight of DONE non-CANCELLED milestones) / sum(weight of
+        non-CANCELLED milestones) * 100; null when the project has no
+        (active) milestones.
+      properties:
+        percent: { type: integer, nullable: true }
+        completedWeight: { type: integer }
+        activeWeight: { type: integer }
+        explanation:
+          type: string
+          description: Numerator/denominator explanation ("No milestones yet" when empty)
 
     ProjectCreate:
       type: object
@@ -1190,6 +1427,15 @@ components:
         sites:
           type: array
           items: { type: string }
+        startDate: { type: string, format: date, nullable: true }
+        targetDate: { type: string, format: date, nullable: true }
+        actualEndDate: { type: string, format: date, nullable: true }
+        acceptanceCriteria: { type: string, nullable: true }
+        deploymentPlan: { type: string, nullable: true }
+        supportOwnerId: { type: string, format: uuid, nullable: true }
+        closureSummary: { type: string, nullable: true }
+        cancelReason: { type: string, nullable: true }
+        holdReason: { type: string, nullable: true }
 
     ProjectPatch:
       allOf:
@@ -1303,6 +1549,126 @@ components:
         reviewedBy: { type: string, format: uuid, nullable: true }
         reviewedAt: { type: string, format: date-time, nullable: true }
         notes: { type: string, nullable: true }
+
+    Milestone:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        type:
+          type: string
+          enum: [STANDARD, SECURITY_GATE, SITE_READINESS, UAT, GO_LIVE, GOVERNANCE_GATE, OPERATIONAL_HANDOVER]
+        status:
+          type: string
+          enum: [NOT_STARTED, IN_PROGRESS, DONE, SLIPPED, CANCELLED]
+        ownerId: { type: string, format: uuid, nullable: true }
+        baselineDue: { type: string, format: date, nullable: true }
+        forecastDue: { type: string, format: date, nullable: true }
+        actualCompleted: { type: string, format: date, nullable: true }
+        weight:
+          type: integer
+          minimum: 1
+          description: Progress weighting (plan §23); default 1
+        version: { type: integer }
+        updatedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    MilestoneCreate:
+      type: object
+      required: [projectId, title]
+      properties:
+        projectId: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        type:
+          type: string
+          enum: [STANDARD, SECURITY_GATE, SITE_READINESS, UAT, GO_LIVE, GOVERNANCE_GATE, OPERATIONAL_HANDOVER]
+        status:
+          type: string
+          enum: [NOT_STARTED, IN_PROGRESS, DONE, SLIPPED, CANCELLED]
+        ownerId: { type: string, format: uuid, nullable: true }
+        baselineDue: { type: string, format: date, nullable: true }
+        forecastDue: { type: string, format: date, nullable: true }
+        actualCompleted: { type: string, format: date, nullable: true }
+        weight: { type: integer, minimum: 1 }
+
+    MilestonePatch:
+      allOf:
+        - $ref: "#/components/schemas/MilestoneCreate"
+      type: object
+      required: [version]
+      properties:
+        version:
+          type: integer
+          description: Base version for OCC
+
+    GateRequirement:
+      type: object
+      properties:
+        key: { type: string }
+        label: { type: string }
+        satisfied: { type: boolean }
+        detail: { type: string, nullable: true }
+
+    GateStatus:
+      type: object
+      properties:
+        stage:
+          type: string
+          enum: [IDEA, INITIATION, PLANNING, EXECUTION, DEPLOYMENT, RUN, CLOSED]
+        nextStage:
+          type: string
+          nullable: true
+          enum: [INITIATION, PLANNING, EXECUTION, DEPLOYMENT, RUN, CLOSED, null]
+        gate:
+          type: string
+          nullable: true
+          enum: [G0, G1, G2, G3, G4, G5, null]
+        requirements:
+          type: array
+          items: { $ref: "#/components/schemas/GateRequirement" }
+        steeringRequired: { type: boolean }
+        pendingRequest: { $ref: "#/components/schemas/GateRequest" }
+
+    GateRequest:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        gate: { type: string, enum: [G0, G1, G2, G3, G4, G5] }
+        fromStage: { type: string }
+        toStage: { type: string }
+        requestedBy: { type: string, format: uuid }
+        requestedAt: { type: string, format: date-time }
+        note: { type: string, nullable: true }
+        dispositionNote: { type: string, nullable: true }
+        status: { type: string, enum: [PENDING, APPROVED, REJECTED] }
+        decidedBy: { type: string, format: uuid, nullable: true }
+        decidedAt: { type: string, format: date-time, nullable: true }
+        decisionNote: { type: string, nullable: true }
+
+    LedgerEntry:
+      type: object
+      description: Immutable (invariant 11) — no update/delete exists anywhere
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        gate: { type: string, enum: [G0, G1, G2, G3, G4, G5] }
+        fromStage: { type: string }
+        toStage: { type: string }
+        projectVersion:
+          type: integer
+          description: The project's version at decision time (pre-transition)
+        requestedBy: { type: string, format: uuid }
+        requestedAt: { type: string, format: date-time }
+        decidedBy: { type: string, format: uuid }
+        decidedAt: { type: string, format: date-time }
+        authorityType: { type: string, enum: [STEERING, ADMIN, DIVISION_LEAD] }
+        decision: { type: string, enum: [APPROVED, REJECTED] }
+        note: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
 
     Site:
       type: object
@@ -1418,7 +1784,7 @@ components:
       required: [opId, entity, op]
       properties:
         opId: { type: string, format: uuid, description: Client-generated }
-        entity: { type: string, enum: [task, project, roadblock] }
+        entity: { type: string, enum: [task, project, roadblock, milestone] }
         entityId: { type: string, format: uuid }
         op: { type: string, enum: [update, create] }
         baseVersion: { type: integer }
