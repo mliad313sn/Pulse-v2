@@ -12,4 +12,6 @@ export const TABLES = {
   gateRequest: 'gate_requests',
   workstream: 'workstreams',
   dependency: 'task_dependencies',
+  projectUpdate: 'project_updates',
+  ragSnapshot: 'rag_snapshots',
 };

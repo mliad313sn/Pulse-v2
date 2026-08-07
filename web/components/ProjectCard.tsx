@@ -3,13 +3,14 @@
 import Link from "next/link";
 import { useMemo } from "react";
 import { useApp } from "@/lib/store";
-import { cn, divisionMeta } from "@/lib/utils";
+import { cn, divisionMeta, isUpdateStale, relativeAgo } from "@/lib/utils";
 import type { Project } from "@/lib/types";
 import { ClassificationBadge, ProjectStatusBadge, SecurityGateBadge, TagChip } from "./Badges";
+import RagBadge from "./RagBadge";
 import { ChevronRightIcon } from "./Icons";
 
 export default function ProjectCard({ project, showTags = false }: { project: Project; showTags?: boolean }) {
-  const { tasks } = useApp();
+  const { tasks, updates } = useApp();
   const div = divisionMeta(project.division);
   const { total, done } = useMemo(() => {
     let total = 0;
@@ -23,6 +24,17 @@ export default function ProjectCard({ project, showTags = false }: { project: Pr
   }, [tasks, project.id]);
   const pct = total ? Math.round((done / total) * 100) : 0;
 
+  // Freshness cue: latest cached update for this project (amber when stale >21d).
+  const latestUpdateAt = useMemo(() => {
+    let latest: string | null = null;
+    for (const u of updates) {
+      if (u.projectId !== project.id || !u.createdAt) continue;
+      if (!latest || u.createdAt > latest) latest = u.createdAt;
+    }
+    return latest;
+  }, [updates, project.id]);
+  const stale = isUpdateStale(latestUpdateAt);
+
   return (
     <Link
       href={`/projects/${project.id}`}
@@ -33,10 +45,14 @@ export default function ProjectCard({ project, showTags = false }: { project: Pr
           <div className="flex items-center gap-2">
             <span className={cn("h-2.5 w-2.5 shrink-0 rounded-full", div.accent)} title={div.label} />
             <h3 className="truncate font-semibold">{project.name}</h3>
+            <RagBadge rag={project.rag} size="sm" className="shrink-0" />
           </div>
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
             {div.label}
             {project.site ? ` · ${project.site}` : ""}
+            <span className={cn("ml-2 text-xs", stale ? "font-medium text-amber-600 dark:text-amber-400" : "text-slate-400 dark:text-slate-500")}>
+              {latestUpdateAt ? `Updated ${relativeAgo(latestUpdateAt)}` : "No update yet"}
+            </span>
           </p>
         </div>
         <ChevronRightIcon className="mt-1 h-4 w-4 shrink-0 text-slate-400" />

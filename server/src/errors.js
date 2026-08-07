@@ -65,6 +65,11 @@ export const gateRequestPending = (pendingRequestId) =>
 export const duplicate = (message = 'Duplicate entry', detail = undefined) =>
   new ApiError(409, 'DUPLICATE', message, detail);
 
+/** E10: manual RAG override demands a substantive reason (plan §25). */
+export const ragOverrideReasonTooShort = () =>
+  new ApiError(400, 'RAG_OVERRIDE_REASON_TOO_SHORT',
+    'Manual RAG override requires a reason of at least 30 characters');
+
 export const dependencyLocked = (detail = undefined) =>
   new ApiError(423, 'DEPENDENCY_LOCKED', 'Prerequisite task is not complete', detail);
 

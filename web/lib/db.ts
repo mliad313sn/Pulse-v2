@@ -5,9 +5,10 @@
 const DB_NAME = "opspm360";
 // v2: added pillars/portfolios/programs/members (Wave 1 slice 2).
 // v3: added milestones (Wave 2 governance).
-// v4: added workstreams + dependencies (Wave 3 planning). onupgradeneeded only
+// v4: added workstreams + dependencies (Wave 3 planning).
+// v5: added updates (Wave 3 RAG health + project updates). onupgradeneeded only
 // creates stores that are missing, so upgrades from any prior version are safe.
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 
 export type StoreName =
   | "projects"
@@ -24,7 +25,8 @@ export type StoreName =
   | "members"
   | "milestones"
   | "workstreams"
-  | "dependencies";
+  | "dependencies"
+  | "updates";
 
 const STORE_KEYS: Record<StoreName, string> = {
   projects: "id",
@@ -44,6 +46,7 @@ const STORE_KEYS: Record<StoreName, string> = {
   milestones: "id",
   workstreams: "id",
   dependencies: "id",
+  updates: "id",
 };
 
 let dbPromise: Promise<IDBDatabase> | null = null;

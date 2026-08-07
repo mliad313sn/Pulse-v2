@@ -33,7 +33,9 @@ import type {
   Milestone,
   MilestoneType,
   Project,
+  ProjectUpdate,
   QueuedOp,
+  RagColor,
   Roadblock,
   RoadblockSeverity,
   RoadblockTarget,
@@ -41,6 +43,7 @@ import type {
   SyncEntity,
   Task,
   TaskDependency,
+  UpdateMood,
   User,
   Workstream,
   WorkstreamStatus,
@@ -64,6 +67,7 @@ const IDB_STORES: idb.StoreName[] = [
   "milestones",
   "workstreams",
   "dependencies",
+  "updates",
 ];
 
 type EntityListKey = "projects" | "tasks" | "roadblocks";
@@ -91,6 +95,8 @@ export interface AppState {
   milestones: Milestone[];
   workstreams: Workstream[];
   dependencies: TaskDependency[];
+  /** Project updates (append-only, ONLINE-ONLY writes; hydrated from bootstrap). */
+  updates: ProjectUpdate[];
   conflicts: ConflictEntry[];
   online: boolean;
   syncing: boolean;
@@ -181,6 +187,21 @@ interface AppActions {
   }) => Promise<MutateOutcome>;
   /** ONLINE-ONLY. */
   deleteDependency: (id: string) => Promise<MutateOutcome>;
+  /** ONLINE-ONLY append-only project update (no outbox — never queued). */
+  createUpdate: (input: {
+    projectId: string;
+    mood: UpdateMood;
+    text: string;
+    accomplishment?: string | null;
+    nextStep?: string | null;
+    supportRequired?: string | null;
+  }) => Promise<MutateOutcome>;
+  /** ONLINE-ONLY: re-fetch a project's full updates feed (newest first). No-op offline. */
+  fetchProjectUpdates: (projectId: string) => Promise<void>;
+  /** ONLINE-ONLY manual RAG override (manage-level; server enforces). */
+  setRagOverride: (projectId: string, color: RagColor, reason: string) => Promise<MutateOutcome>;
+  /** ONLINE-ONLY: clear a manual RAG override. */
+  clearRagOverride: (projectId: string) => Promise<MutateOutcome>;
   /** Re-fetch /api/bootstrap (refreshes derived project progress after governance changes). */
   refresh: () => Promise<void>;
   lockedReason: (task: Task) => LockedReason | null;
@@ -203,6 +224,7 @@ const INITIAL_STATE: AppState = {
   milestones: [],
   workstreams: [],
   dependencies: [],
+  updates: [],
   conflicts: [],
   online: true,
   syncing: false,
@@ -234,6 +256,16 @@ function looksLikeDependency(value: unknown): value is TaskDependency {
     value !== null &&
     typeof (value as { id?: unknown }).id === "string" &&
     typeof (value as { predecessorId?: unknown }).predecessorId === "string"
+  );
+}
+
+function looksLikeUpdate(value: unknown): value is ProjectUpdate {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { id?: unknown }).id === "string" &&
+    typeof (value as { projectId?: unknown }).projectId === "string" &&
+    typeof (value as { text?: unknown }).text === "string"
   );
 }
 
@@ -440,6 +472,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const milestones = boot.milestones ?? [];
       const workstreams = boot.workstreams ?? [];
       const dependencies = boot.dependencies ?? [];
+      // Updates are append-only + online-only (never queued) — no rebase needed.
+      const updates = boot.updates ?? [];
       await Promise.all([
         idb.replaceAll("projects", projects),
         idb.replaceAll("tasks", tasks),
@@ -448,6 +482,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         idb.replaceAll("milestones", milestones),
         idb.replaceAll("workstreams", workstreams),
         idb.replaceAll("dependencies", dependencies),
+        idb.replaceAll("updates", updates),
         idb.setMeta("refreshedAt", boot.serverTime),
         boot.user ? idb.setMeta("currentUser", boot.user) : Promise.resolve(),
       ]);
@@ -459,6 +494,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         milestones,
         workstreams,
         dependencies,
+        updates,
         refreshedAt: boot.serverTime ?? new Date().toISOString(),
         user: boot.user ?? s.user,
         bootLoading: false,
@@ -497,6 +533,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       milestones: [],
       workstreams: [],
       dependencies: [],
+      updates: [],
       conflicts: [],
       outboxCount: 0,
       refreshedAt: null,
@@ -1116,6 +1153,150 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [guardWrite, toast, patch, refresh],
   );
 
+  // ---- project updates + RAG override (Wave 3 — ONLINE-ONLY, no outbox) ----
+
+  const mergeProjectUpdates = useCallback(
+    async (projectId: string, fresh: ProjectUpdate[]) => {
+      // Replace only THIS project's rows in the shared updates cache.
+      const stale = stateRef.current.updates.filter((u) => u.projectId === projectId).map((u) => u.id);
+      await idb.bulkDel("updates", stale);
+      for (const u of fresh) await idb.put("updates", u);
+      patch((prev) => ({
+        updates: [...prev.updates.filter((u) => u.projectId !== projectId), ...fresh],
+      }));
+    },
+    [patch],
+  );
+
+  const fetchProjectUpdates = useCallback(
+    async (projectId: string) => {
+      const s = stateRef.current;
+      if (!s.user || !s.online) return;
+      try {
+        const res = await api<unknown>(`/api/projects/${projectId}/updates`);
+        const list = (Array.isArray(res)
+          ? res
+          : Array.isArray((res as { updates?: unknown })?.updates)
+            ? (res as { updates: unknown[] }).updates
+            : []
+        ).filter(looksLikeUpdate);
+        await mergeProjectUpdates(projectId, list as ProjectUpdate[]);
+      } catch {
+        // network/API failure — keep whatever the cache had
+      }
+    },
+    [mergeProjectUpdates],
+  );
+
+  const createUpdate = useCallback(
+    async (input: {
+      projectId: string;
+      mood: UpdateMood;
+      text: string;
+      accomplishment?: string | null;
+      nextStep?: string | null;
+      supportRequired?: string | null;
+    }): Promise<MutateOutcome> => {
+      const denied = guardWrite();
+      if (denied) return denied;
+      if (!stateRef.current.online) {
+        toast("Posting an update needs a live connection.", "warning");
+        return { ok: false, code: "OFFLINE" };
+      }
+      try {
+        const res = await api<unknown>("/api/updates", {
+          method: "POST",
+          body: {
+            projectId: input.projectId,
+            mood: input.mood,
+            text: input.text,
+            accomplishment: input.accomplishment || undefined,
+            nextStep: input.nextStep || undefined,
+            supportRequired: input.supportRequired || undefined,
+          },
+        });
+        if (looksLikeUpdate(res)) {
+          const u = res as ProjectUpdate;
+          patch((prev) => ({ updates: [...prev.updates.filter((x) => x.id !== u.id), u] }));
+          void idb.put("updates", u);
+        }
+        // Updates can feed the derived RAG signals — re-read from the server.
+        void refresh();
+        return { ok: true };
+      } catch (e) {
+        if (e instanceof ApiError) {
+          toast(e.message || `Update not posted (${e.code}).`, "error");
+          return { ok: false, code: e.code, message: e.message };
+        }
+        toast("Network error — update not posted.", "error");
+        return { ok: false, code: "NETWORK" };
+      }
+    },
+    [guardWrite, toast, patch, refresh],
+  );
+
+  const setRagOverride = useCallback(
+    async (projectId: string, color: RagColor, reason: string): Promise<MutateOutcome> => {
+      const denied = guardWrite();
+      if (denied) return denied;
+      if (!stateRef.current.online) {
+        toast("RAG overrides need a live connection.", "warning");
+        return { ok: false, code: "OFFLINE" };
+      }
+      try {
+        const res = await api<unknown>(`/api/projects/${projectId}/rag-override`, {
+          method: "POST",
+          body: { color, reason },
+        });
+        if (looksLikeEntity(res)) setEntity("projects", res as unknown as Task);
+        // The derived rag block lives on the project payload — re-read.
+        await refresh();
+        return { ok: true };
+      } catch (e) {
+        if (e instanceof ApiError) {
+          const message =
+            e.code === "RAG_OVERRIDE_REASON_TOO_SHORT"
+              ? "The override reason must be at least 30 characters — explain why you are overriding the computed health."
+              : e.status === 403
+                ? "Only project managers, division leads or admins can override RAG health."
+                : e.message || `Override rejected (${e.code}).`;
+          return { ok: false, code: e.code, message };
+        }
+        toast("Network error — RAG override not saved.", "error");
+        return { ok: false, code: "NETWORK" };
+      }
+    },
+    [guardWrite, toast, setEntity, refresh],
+  );
+
+  const clearRagOverride = useCallback(
+    async (projectId: string): Promise<MutateOutcome> => {
+      const denied = guardWrite();
+      if (denied) return denied;
+      if (!stateRef.current.online) {
+        toast("RAG overrides need a live connection.", "warning");
+        return { ok: false, code: "OFFLINE" };
+      }
+      try {
+        const res = await api<unknown>(`/api/projects/${projectId}/rag-override`, { method: "DELETE" });
+        if (looksLikeEntity(res)) setEntity("projects", res as unknown as Task);
+        await refresh();
+        return { ok: true };
+      } catch (e) {
+        if (e instanceof ApiError) {
+          const message =
+            e.status === 403
+              ? "Only project managers, division leads or admins can clear a RAG override."
+              : e.message || `Could not clear the override (${e.code}).`;
+          return { ok: false, code: e.code, message };
+        }
+        toast("Network error — override not cleared.", "error");
+        return { ok: false, code: "NETWORK" };
+      }
+    },
+    [guardWrite, toast, setEntity, refresh],
+  );
+
   // ---- boot & connectivity --------------------------------------------------
 
   /**
@@ -1148,7 +1329,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     (async () => {
       const online = typeof navigator !== "undefined" ? navigator.onLine : true;
-      const [users, projects, tasks, roadblocks, approvals, milestones, workstreams, dependencies, conflicts, queuedCount, cachedUser, refreshedAt] =
+      const [users, projects, tasks, roadblocks, approvals, milestones, workstreams, dependencies, updates, conflicts, queuedCount, cachedUser, refreshedAt] =
         await Promise.all([
           idb.getAll<User>("users"),
           idb.getAll<Project>("projects"),
@@ -1158,6 +1339,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           idb.getAll<Milestone>("milestones"),
           idb.getAll<Workstream>("workstreams"),
           idb.getAll<TaskDependency>("dependencies"),
+          idb.getAll<ProjectUpdate>("updates"),
           idb.getAll<ConflictEntry>("conflicts"),
           outboxCount(),
           idb.getMeta<User>("currentUser"),
@@ -1178,6 +1360,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         milestones,
         workstreams,
         dependencies,
+        updates,
         conflicts,
         outboxCount: queuedCount,
         user,
@@ -1272,6 +1455,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       updateTaskPlan,
       createDependency,
       deleteDependency,
+      createUpdate,
+      fetchProjectUpdates,
+      setRagOverride,
+      clearRagOverride,
       refresh,
       lockedReason,
       lockedMessage,
@@ -1299,6 +1486,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       updateTaskPlan,
       createDependency,
       deleteDependency,
+      createUpdate,
+      fetchProjectUpdates,
+      setRagOverride,
+      clearRagOverride,
       refresh,
       lockedReason,
       lockedMessage,

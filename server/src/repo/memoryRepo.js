@@ -79,6 +79,8 @@ function seedFixtures() {
     startDate: null, targetDate: null, actualEndDate: null,
     acceptanceCriteria: null, deploymentPlan: null, supportOwnerId: null,
     closureSummary: null, cancelReason: null, holdReason: null,
+    // E10: manual RAG override {color, reason, byId, at} | null (server-managed).
+    ragOverride: null,
   };
   const projects = [
     {
@@ -154,6 +156,22 @@ function seedFixtures() {
     },
   ];
 
+  // E13: one seed project update (mirrors db/init/02_seed.sql) so the RAG
+  // freshness signal and the updates UI have real data out of the box.
+  const updates = [
+    {
+      id: '50000000-0000-0000-0000-000000000001',
+      projectId: '10000000-0000-0000-0000-000000000001',
+      authorId: u(1),
+      mood: 'NEUTRAL',
+      text: 'Server room prep on track; cooling unit still held at customs.',
+      accomplishment: 'Cabling paths completed',
+      nextStep: 'Install cooling unit once customs clears',
+      supportRequired: null,
+      createdAt: t0,
+    },
+  ];
+
   const approvals = [
     {
       id: '40000000-0000-0000-0000-000000000001',
@@ -165,7 +183,7 @@ function seedFixtures() {
     },
   ];
 
-  return { users, credentials, projects, tasks, roadblocks, approvals };
+  return { users, credentials, projects, tasks, roadblocks, approvals, updates };
 }
 
 export class MemoryRepo {
@@ -189,7 +207,14 @@ export class MemoryRepo {
       gateRequest: [],
       workstream: [],
       dependency: [],
+      // E13 project updates are APPEND-ONLY: only insert() is ever called for
+      // this kind (no PATCH/DELETE routes exist; trg_project_updates_append_only
+      // is the Postgres backstop).
+      projectUpdate: seed.updates,
     };
+    // E10 RAG snapshots (plan §133) — derived trend history, append-only and
+    // deliberately NOT audited (like the approval ledger, it IS a record).
+    this._ragSnapshots = [];
     // E05 approval ledger — push-only (invariant 11). There is deliberately
     // NO update/delete method for it anywhere on this repository; entries are
     // deep-frozen on append (mirrors trg_approval_ledger_immutable).
@@ -502,6 +527,21 @@ export class MemoryRepo {
     let rows = this._ledger;
     if (filter.projectId !== undefined) rows = rows.filter((e) => e.projectId === filter.projectId);
     return rows.map(clone);
+  }
+
+  // ---- RAG snapshots (E10, plan §133 — append-only trend history) ----------
+  /** Ascending capture order; optional projectId filter. */
+  async listRagSnapshots(filter = {}) {
+    let rows = this._ragSnapshots;
+    if (filter.projectId !== undefined) rows = rows.filter((s) => s.projectId === filter.projectId);
+    return clone(rows);
+  }
+
+  /** Append-only; not audited (the snapshot itself is the record). */
+  async appendRagSnapshot(snapshot) {
+    const stored = clone(snapshot);
+    this._ragSnapshots.push(stored);
+    return clone(stored);
   }
 
   // ---- audit ---------------------------------------------------------------

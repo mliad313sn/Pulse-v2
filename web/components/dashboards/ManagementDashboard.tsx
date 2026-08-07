@@ -6,10 +6,11 @@ import { useMemo, useState } from "react";
 import { useApp } from "@/lib/store";
 import { useToast } from "@/components/Toast";
 import { apiBlob } from "@/lib/api";
-import { cn, divisionMeta, DIVISION_META, PROJECT_STATUS_META } from "@/lib/utils";
-import type { Project, ProjectStatus } from "@/lib/types";
+import { cn, divisionMeta, DIVISION_META, PROJECT_STATUS_META, RAG_COLORS } from "@/lib/utils";
+import type { Project, ProjectStatus, RagColor } from "@/lib/types";
 import ProjectCard from "@/components/ProjectCard";
 import NewProjectButton from "@/components/NewProjectButton";
+import { RagCountPill } from "@/components/RagBadge";
 import { Pill } from "@/components/Badges";
 import { PageHeader, SectionHeader } from "@/components/Headings";
 import { DownloadIcon } from "@/components/Icons";
@@ -24,6 +25,7 @@ interface MatrixRow {
   division: string;
   projects: Project[];
   byStatus: Record<ProjectStatus, number>;
+  byRag: Record<RagColor, number>;
   blockedTasks: number;
   openRoadblocks: number;
 }
@@ -49,6 +51,7 @@ export default function ManagementDashboard() {
           division,
           projects: [],
           byStatus: Object.fromEntries(STATUS_ORDER.map((s) => [s, 0])) as Record<ProjectStatus, number>,
+          byRag: Object.fromEntries(RAG_COLORS.map((c) => [c, 0])) as Record<RagColor, number>,
           blockedTasks: 0,
           openRoadblocks: 0,
         },
@@ -62,6 +65,7 @@ export default function ManagementDashboard() {
       if (!row) continue;
       row.projects.push(p);
       row.byStatus[p.overallStatus] += 1;
+      if (p.rag && row.byRag[p.rag.color] !== undefined) row.byRag[p.rag.color] += 1;
     }
     for (const t of tasks) {
       if (t.status !== "blocked") continue;
@@ -163,6 +167,13 @@ export default function ManagementDashboard() {
                     className={cn("h-3 w-3 rounded-full", healthTone(row.byStatus))}
                   />
                 </div>
+                {(row.byRag.GREEN > 0 || row.byRag.AMBER > 0 || row.byRag.RED > 0) && (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {RAG_COLORS.map((c) => (
+                      <RagCountPill key={c} color={c} count={row.byRag[c]} />
+                    ))}
+                  </div>
+                )}
                 <div className="mt-4 flex flex-wrap gap-1.5">
                   {STATUS_ORDER.filter((s) => row.byStatus[s] > 0).map((s) => (
                     <Pill key={s} className={cn("gap-1", PROJECT_STATUS_META[s].badge)}>

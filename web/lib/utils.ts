@@ -11,9 +11,11 @@ import type {
   ProjectProgress,
   ProjectRole,
   ProjectStatus,
+  RagColor,
   RoadblockSeverity,
   Task,
   TaskStatus,
+  UpdateMood,
   User,
   WorkstreamStatus,
 } from "./types";
@@ -426,6 +428,110 @@ export const DIVISION_META: Record<string, { label: string; short: string; accen
 
 export function divisionMeta(division: Division | null | undefined) {
   return DIVISION_META[division || ""] || { label: division || "Unknown", short: "?", accent: "bg-slate-500" };
+}
+
+// ---- RAG health (Wave 3) ----------------------------------------------------
+// a11y (plan §167): RAG is NEVER color alone — every rendering pairs the color
+// with a distinct SHAPE (circle/triangle/square) and TEXT label.
+
+export const RAG_COLORS: RagColor[] = ["GREEN", "AMBER", "RED"];
+
+export type RagShape = "circle" | "triangle" | "square";
+
+export const RAG_META: Record<
+  RagColor,
+  { label: string; shape: RagShape; badge: string; shapeClass: string; chip: string; selected: string }
+> = {
+  GREEN: {
+    label: "Green",
+    shape: "circle",
+    badge: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300",
+    shapeClass: "text-emerald-600 dark:text-emerald-400",
+    chip: "border-emerald-300 text-emerald-700 dark:border-emerald-700 dark:text-emerald-400",
+    selected: "bg-emerald-600 border-emerald-600 text-white",
+  },
+  AMBER: {
+    label: "Amber",
+    shape: "triangle",
+    badge: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300",
+    shapeClass: "text-amber-600 dark:text-amber-400",
+    chip: "border-amber-300 text-amber-700 dark:border-amber-700 dark:text-amber-400",
+    selected: "bg-amber-500 border-amber-500 text-white",
+  },
+  RED: {
+    label: "Red",
+    shape: "square",
+    badge: "bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300",
+    shapeClass: "text-rose-600 dark:text-rose-400",
+    chip: "border-rose-300 text-rose-700 dark:border-rose-700 dark:text-rose-400",
+    selected: "bg-rose-600 border-rose-600 text-white",
+  },
+};
+
+/** Minimum characters the server requires for a manual RAG override reason. */
+export const RAG_OVERRIDE_REASON_MIN = 30;
+
+// ---- Project updates (Wave 3) -----------------------------------------------
+
+export const UPDATE_MOODS: UpdateMood[] = ["POSITIVE", "NEUTRAL", "CONCERN", "CRITICAL"];
+
+export const UPDATE_MOOD_META: Record<
+  UpdateMood,
+  { label: string; chip: string; selected: string; badge: string }
+> = {
+  POSITIVE: {
+    label: "Positive",
+    chip: "border-emerald-300 text-emerald-700 dark:border-emerald-700 dark:text-emerald-400",
+    selected: "bg-emerald-600 border-emerald-600 text-white",
+    badge: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300",
+  },
+  NEUTRAL: {
+    label: "Neutral",
+    chip: "border-slate-300 text-slate-600 dark:border-slate-600 dark:text-slate-300",
+    selected: "bg-slate-600 border-slate-600 text-white",
+    badge: "bg-slate-100 text-slate-600 dark:bg-slate-700/60 dark:text-slate-300",
+  },
+  CONCERN: {
+    label: "Concern",
+    chip: "border-amber-300 text-amber-700 dark:border-amber-700 dark:text-amber-400",
+    selected: "bg-amber-500 border-amber-500 text-white",
+    badge: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300",
+  },
+  CRITICAL: {
+    label: "Critical",
+    chip: "border-rose-300 text-rose-700 dark:border-rose-700 dark:text-rose-400",
+    selected: "bg-rose-600 border-rose-600 text-white",
+    badge: "bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300",
+  },
+};
+
+/** Max characters for the one-sentence update text. */
+export const UPDATE_TEXT_MAX = 400;
+
+/** Updates older than this (days) render the freshness cue in amber. */
+export const UPDATE_STALE_DAYS = 21;
+
+/** "just now" / "5m ago" / "3h ago" / "3d ago" — for update timestamps. */
+export function relativeAgo(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "";
+  const diff = Date.now() - t;
+  if (diff < 60_000) return "just now";
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(diff / 3_600_000);
+  if (hours < 48) return `${hours}h ago`;
+  const days = Math.floor(diff / 86_400_000);
+  return `${days}d ago`;
+}
+
+/** True when an ISO timestamp is older than UPDATE_STALE_DAYS. */
+export function isUpdateStale(iso: string | null | undefined): boolean {
+  if (!iso) return false;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return false;
+  return Date.now() - t > UPDATE_STALE_DAYS * 86_400_000;
 }
 
 export type SlaState = "warn" | "overdue" | null;

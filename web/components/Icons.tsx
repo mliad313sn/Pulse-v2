@@ -249,6 +249,32 @@ export function GanttIcon({ className }: IconProps) {
   );
 }
 
+export function ArrowUpIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="M12 19V5m0 0l-6 6m6-6l6 6" />
+    </svg>
+  );
+}
+
+export function MinusIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="M5 12h14" />
+    </svg>
+  );
+}
+
+export function AlertOctagonIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="M8.2 3h7.6L21 8.2v7.6L15.8 21H8.2L3 15.8V8.2z" />
+      <path d="M12 8v4.5" />
+      <circle cx="12" cy="16" r="0.8" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 export function MergeIcon({ className }: IconProps) {
   return (
     <svg {...base(className)}>

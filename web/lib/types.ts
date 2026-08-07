@@ -67,6 +67,61 @@ export type OperatingStatus =
   | "COMPLETED"
   | "CANCELLED";
 
+// ---- RAG health (Wave 3) ----------------------------------------------------
+
+export type RagColor = "GREEN" | "AMBER" | "RED";
+
+/** One contributing signal in the server-side RAG computation. */
+export interface RagSignal {
+  key: string;
+  color: RagColor;
+  label: string;
+  explanation: string;
+}
+
+/** Manual RAG override (manage-level users; server records who/when/why). */
+export interface RagManual {
+  color: RagColor;
+  reason: string;
+  byId: string;
+  at: string;
+}
+
+/** Derived, read-only RAG health rollup on every project payload. */
+export interface ProjectRag {
+  /** Effective color (manual override wins over computed). */
+  color: RagColor;
+  computedColor: RagColor;
+  manual: RagManual | null;
+  signals: RagSignal[];
+  explanation: string;
+}
+
+/** One row of GET /api/projects/:id/rag-history (newest first). */
+export interface RagHistoryEntry {
+  color: RagColor;
+  computedColor: RagColor;
+  isManual: boolean;
+  capturedAt: string;
+}
+
+// ---- Project updates (Wave 3 — append-only, ONLINE-ONLY) --------------------
+
+export type UpdateMood = "POSITIVE" | "NEUTRAL" | "CONCERN" | "CRITICAL";
+
+export interface ProjectUpdate {
+  id: string;
+  projectId: string;
+  authorId: string;
+  mood: UpdateMood;
+  /** One sentence, max 400 chars. */
+  text: string;
+  accomplishment?: string | null;
+  nextStep?: string | null;
+  supportRequired?: string | null;
+  createdAt: string;
+}
+
 /** Derived, read-only rollup computed server-side from milestone weights. */
 export interface ProjectProgress {
   /** null when the project has no active milestones. */
@@ -113,6 +168,8 @@ export interface Project {
   holdReason?: string | null;
   /** Derived server-side from milestones — never editable client-side. */
   progress?: ProjectProgress;
+  /** Derived server-side RAG health — never editable client-side (optional only for stale caches). */
+  rag?: ProjectRag;
   version: number;
   updatedAt: string;
   createdAt?: string;
@@ -385,6 +442,8 @@ export interface Bootstrap {
   milestones?: Milestone[];
   workstreams?: Workstream[];
   dependencies?: TaskDependency[];
+  /** Latest ~20 updates per project. */
+  updates?: ProjectUpdate[];
   serverTime: string;
 }
 

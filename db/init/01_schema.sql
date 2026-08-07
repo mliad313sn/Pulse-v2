@@ -186,6 +186,11 @@ CREATE TABLE projects (
     closure_summary      TEXT,
     cancel_reason        TEXT,   -- required by the service when operating_status -> CANCELLED
     hold_reason          TEXT,   -- required by the service when operating_status -> ON_HOLD
+    -- E10 manual RAG override (plan §25): {color, reason, byId, at} | NULL.
+    -- Server-managed via POST/DELETE /api/projects/:id/rag-override only —
+    -- never a writable PATCH/sync field. The computed RAG itself is derived
+    -- at read time (services/rag.js); only the override is stored.
+    rag_override         JSONB,
     engaged_divisions    TEXT[] NOT NULL DEFAULT '{}',
     sites                TEXT[] NOT NULL DEFAULT '{}',  -- additional sites; `site` stays primary
     cgeit_tag            TEXT NOT NULL DEFAULT 'value_delivery'
@@ -500,6 +505,54 @@ CREATE TABLE roadblocks (
 CREATE INDEX idx_roadblocks_project ON roadblocks(project_id);
 
 -- ----------------------------------------------------------------------------
+-- E13 — Project updates (plan §32): the fast "~20 second" status pulse and the
+-- source of the RAG freshness signal. APPEND-ONLY: the API exposes POST + GET
+-- only (no PATCH/DELETE — revisions arrive with the full E13 slice) and the
+-- trigger below is the database backstop. No OCC version (rows never change).
+-- ----------------------------------------------------------------------------
+CREATE TABLE project_updates (
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id       UUID NOT NULL REFERENCES projects(id),
+    author_id        UUID NOT NULL REFERENCES users(id),
+    mood             TEXT NOT NULL CHECK (mood IN ('POSITIVE', 'NEUTRAL', 'CONCERN', 'CRITICAL')),
+    text             TEXT NOT NULL CHECK (char_length(text) BETWEEN 1 AND 400),
+    accomplishment   TEXT,
+    next_step        TEXT,
+    support_required TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_project_updates_project ON project_updates(project_id, created_at);
+
+CREATE OR REPLACE FUNCTION forbid_project_update_mutation() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'PROJECT_UPDATE_APPEND_ONLY: project updates are append-only: % is forbidden', TG_OP
+        USING ERRCODE = 'raise_exception';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_project_updates_append_only
+    BEFORE UPDATE OR DELETE ON project_updates
+    FOR EACH ROW EXECUTE FUNCTION forbid_project_update_mutation();
+
+-- ----------------------------------------------------------------------------
+-- E10 — RAG trend snapshots (plan §133). A row is appended (lazily, at read
+-- time) whenever a project's effective or computed RAG color differs from its
+-- last snapshot — never backfilled/fabricated. Like the approval ledger this
+-- IS a historical record: append-only and not audited.
+-- ----------------------------------------------------------------------------
+CREATE TABLE rag_snapshots (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id     UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    color          TEXT NOT NULL CHECK (color IN ('GREEN', 'AMBER', 'RED')),
+    computed_color TEXT NOT NULL CHECK (computed_color IN ('GREEN', 'AMBER', 'RED')),
+    is_manual      BOOLEAN NOT NULL DEFAULT false,
+    captured_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_rag_snapshots_project ON rag_snapshots(project_id, captured_at);
+
+-- ----------------------------------------------------------------------------
 -- Security approvals — InfoSec review pool (routing target for risk tags)
 -- ----------------------------------------------------------------------------
 CREATE TABLE security_approvals (
@@ -602,7 +655,11 @@ CREATE TRIGGER trg_audit_workstreams AFTER INSERT OR UPDATE OR DELETE ON workstr
     FOR EACH ROW EXECUTE FUNCTION write_audit_log();
 CREATE TRIGGER trg_audit_task_dependencies AFTER INSERT OR UPDATE OR DELETE ON task_dependencies
     FOR EACH ROW EXECUTE FUNCTION write_audit_log();
--- approval_ledger is itself a governance record (like audit_logs) — not audited.
+-- project_updates are append-only, so only INSERT can ever fire.
+CREATE TRIGGER trg_audit_project_updates AFTER INSERT ON project_updates
+    FOR EACH ROW EXECUTE FUNCTION write_audit_log();
+-- approval_ledger and rag_snapshots are themselves governance/derived records
+-- (like audit_logs) — not audited.
 
 -- ----------------------------------------------------------------------------
 -- GOVERNANCE: security routing

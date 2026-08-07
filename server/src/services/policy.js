@@ -206,6 +206,17 @@ export function canWriteRoadblock(user, project, roadblock, members = []) {
   return roadblock == null || roadblock.reportedBy === user.id;
 }
 
+/**
+ * Project update (E13) creation: manage-level authority, the project's
+ * owner/sponsor, or any contributing member (INFORMED/AUDITOR excluded).
+ * Updates are append-only, so there is no update/delete policy.
+ */
+export function canPostProjectUpdate(user, project, members = []) {
+  if (!canWrite(user) || !project) return false;
+  if (canManageProjectWork(user, project, members)) return true;
+  return isOwnerOrSponsor(user, project) || isContributingMember(user, members);
+}
+
 const POLICIES = {
   'project:create': {
     can: canCreateProject,

@@ -26,6 +26,7 @@ const COLUMNS = {
     acceptanceCriteria: 'acceptance_criteria', deploymentPlan: 'deployment_plan',
     supportOwnerId: 'support_owner_id', closureSummary: 'closure_summary',
     cancelReason: 'cancel_reason', holdReason: 'hold_reason',
+    ragOverride: 'rag_override',
     version: 'version', updatedAt: 'updated_at', createdAt: 'created_at',
   },
   milestone: {
@@ -70,6 +71,11 @@ const COLUMNS = {
   dependency: {
     id: 'id', projectId: 'project_id', predecessorId: 'predecessor_id',
     successorId: 'successor_id', type: 'type', lagDays: 'lag_days', createdAt: 'created_at',
+  },
+  projectUpdate: {
+    id: 'id', projectId: 'project_id', authorId: 'author_id', mood: 'mood',
+    text: 'text', accomplishment: 'accomplishment', nextStep: 'next_step',
+    supportRequired: 'support_required', createdAt: 'created_at',
   },
   roadblock: {
     id: 'id', projectId: 'project_id', taskId: 'task_id', description: 'description',
@@ -482,6 +488,41 @@ class PgQueries {
       params,
     );
     return rows.map(mapLedger);
+  }
+
+  // ---- RAG snapshots (E10, plan §133 — append-only trend history) ----------
+  /** Ascending capture order; optional projectId filter. Not audited. */
+  async listRagSnapshots(filter = {}) {
+    const where = [];
+    const params = [];
+    if (filter.projectId !== undefined) {
+      params.push(filter.projectId);
+      where.push(`project_id = $${params.length}`);
+    }
+    const { rows } = await this._query(
+      `SELECT * FROM rag_snapshots${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY captured_at, id`,
+      params,
+    );
+    return rows.map((r) => ({
+      id: r.id, projectId: r.project_id, color: r.color,
+      computedColor: r.computed_color, isManual: r.is_manual,
+      capturedAt: toIso(r.captured_at),
+    }));
+  }
+
+  async appendRagSnapshot(snapshot) {
+    const { rows } = await this._query(
+      `INSERT INTO rag_snapshots (id, project_id, color, computed_color, is_manual, captured_at)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [snapshot.id, snapshot.projectId, snapshot.color, snapshot.computedColor,
+       snapshot.isManual === true, snapshot.capturedAt],
+    );
+    const r = rows[0];
+    return {
+      id: r.id, projectId: r.project_id, color: r.color,
+      computedColor: r.computed_color, isManual: r.is_manual,
+      capturedAt: toIso(r.captured_at),
+    };
   }
 
   // ---- audit (written by DB triggers; read-only here) ----------------------

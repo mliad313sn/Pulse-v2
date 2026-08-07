@@ -13,6 +13,9 @@ import EditProjectButton from "@/components/EditProjectDialog";
 import ProjectProgress from "@/components/ProjectProgress";
 import Milestones from "@/components/Milestones";
 import Workstreams from "@/components/Workstreams";
+import UpdateComposer from "@/components/UpdateComposer";
+import UpdatesFeed from "@/components/UpdatesFeed";
+import { RagExplainButton } from "@/components/RagExplain";
 import { PageHeader } from "@/components/Headings";
 import LogRoadblockButton from "@/components/LogRoadblockButton";
 import {
@@ -123,6 +126,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           }
         />
         <div className="mt-3 flex flex-wrap items-center gap-1.5">
+          <RagExplainButton project={project} />
           <ProjectCodeChip code={project.code} />
           <LifecycleChip stage={project.lifecycleStage} />
           <OperatingStatusBadge status={project.operatingStatus} />
@@ -152,6 +156,14 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         )}
         <ProjectProgress project={project} />
       </header>
+
+      <section>
+        <h2 className="mb-3 text-lg font-semibold">Updates</h2>
+        <div className="space-y-4">
+          <UpdateComposer projectId={project.id} />
+          <UpdatesFeed projectId={project.id} />
+        </div>
+      </section>
 
       <Kanban projectId={project.id} />
 

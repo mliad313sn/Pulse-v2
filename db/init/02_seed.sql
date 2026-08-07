@@ -98,6 +98,18 @@ INSERT INTO tasks (id, project_id, title, division, site, assignee_id, status, p
      '00000000-0000-0000-0000-000000000006',
      'todo', 'normal');
 
+-- E13: one seed project update on project 1 (MemoryRepo embeds the same row)
+-- so the RAG freshness signal and the updates feed have data out of the box.
+INSERT INTO project_updates (id, project_id, author_id, mood, text, accomplishment, next_step, created_at) VALUES
+    ('50000000-0000-0000-0000-000000000001',
+     '10000000-0000-0000-0000-000000000001',
+     '00000000-0000-0000-0000-000000000001',
+     'NEUTRAL',
+     'Server room prep on track; cooling unit still held at customs.',
+     'Cabling paths completed',
+     'Install cooling unit once customs clears',
+     now() - interval '1 day');
+
 INSERT INTO roadblocks (project_id, task_id, description, severity, status, reported_by) VALUES
     ('10000000-0000-0000-0000-000000000001',
      '20000000-0000-0000-0000-000000000001',
