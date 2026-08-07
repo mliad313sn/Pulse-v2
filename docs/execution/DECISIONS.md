@@ -24,13 +24,24 @@ switching; production code paths must never trust a bare user id. Mechanism: tes
 in via the real /api/auth/login with seeded credentials — no backdoor header in production code.
 
 ## ADR-003 — v1 LWW conflict resolution is scheduled for removal (plan conflict)
-Date: 2026-08-07 · Status: accepted, not yet executed (E25/E26 slice)
+Date: 2026-08-07 · Status: **executed** (E25/E26 slice, 2026-08-07)
 
 Master plan §57/§58 + invariant 20 forbid machine-invented merges and last-write-wins for core
-collaborative objects; v1's sync uses LWW on clientUpdatedAt. When the offline epic is reworked,
+collaborative objects; v1's sync used LWW on clientUpdatedAt. When the offline epic is reworked,
 the sync processor keeps `applied` (version match) and turns EVERY stale-version write into a
-halt/manual-resolution path with ordered replay. Until then the v1 behavior remains but is marked
-non-compliant in traceability (do NOT build new features on the LWW path).
+halt/manual-resolution path with ordered replay.
+
+Executed 2026-08-07: `occ.applyUpdate` is strict-only (the LWW branch and the mode flag are
+deleted; `lww_applied` removed from result enums, the `sync_queue` CHECK constraint, and docs).
+POST /api/sync now processes an ordered command log (client-assigned integer `seq`, ascending;
+missing/duplicate seq refuses the whole batch 400): outcomes are `applied` | `blocked` (the first
+failing op for ANY reason — stale version → VERSION_CONFLICT with serverState, gates, validation,
+authz change, missing/concealed target) | `held` (later ops, untouched/unvalidated). The batch
+halts at the first blocked op (`haltedAt`), audits ONE `SYNC_HALTED` event (actor = syncing user,
+source 'sync'; E19 will hang admin notification off it), and replays of applied clientId+opId
+pairs are idempotent no-ops. `POST /api/sync/discard` records the explicit human discard
+resolution as an audited `SYNC_DISCARDED` event. Contract: API_CONTRACT v7 / openapi 1.5.0;
+invariants 18-20 fully enforced and tested (sc1_offline_sync + sync_halt suites).
 
 ## ADR-004 — Base roles migrate v1 roles
 Date: 2026-08-07 · Status: accepted
