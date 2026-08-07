@@ -19,7 +19,7 @@ export function approvalsRouter() {
     res.json(approvals.filter((a) => visible.has(a.projectId)));
   }));
 
-  /** POST /api/approvals/:id/decision — security_reviewer only. */
+  /** POST /api/approvals/:id/decision — security_reviewer privilege only. */
   router.post('/:id/decision', asyncHandler(async (req, res) => {
     const repo = req.app.locals.repo;
     const result = await repo.transaction(req.user.id, (tx) =>

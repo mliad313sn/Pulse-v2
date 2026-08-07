@@ -273,7 +273,10 @@ CREATE TRIGGER trg_audit_security  AFTER INSERT OR UPDATE OR DELETE ON security_
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION route_security_review() RETURNS trigger AS $$
 DECLARE
-    v_project_id UUID := CASE WHEN TG_TABLE_NAME = 'projects' THEN NEW.id ELSE NEW.project_id END;
+    -- to_jsonb(NEW) avoids plan-time resolution of NEW.project_id, which does
+    -- not exist on the projects row type (the function serves both tables).
+    v_project_id UUID := CASE WHEN TG_TABLE_NAME = 'projects' THEN NEW.id
+                              ELSE (to_jsonb(NEW)->>'project_id')::UUID END;
     v_task_id    UUID := CASE WHEN TG_TABLE_NAME = 'tasks' THEN NEW.id ELSE NULL END;
     v_tag        TEXT;
 BEGIN

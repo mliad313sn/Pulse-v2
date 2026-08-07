@@ -83,7 +83,8 @@ export function recomputeGateStatus(approvals) {
 }
 
 /**
- * Approval decision — security_reviewer only. Recomputes the project gate.
+ * Approval decision — requires the security_reviewer PRIVILEGE (ADR-004).
+ * Recomputes the project gate.
  * Returns { approval, project }.
  */
 export async function applyApprovalDecision(repo, reviewer, approvalId, { decision, notes } = {}) {

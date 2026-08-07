@@ -4,13 +4,18 @@ info:
   version: "1.0.0"
   description: |
     Offline-first project portfolio management for multi-site mining IT operations.
-    Demo-grade auth: every request (except public endpoints) carries `x-user-id: <uuid>`.
+    Auth: server-side sessions — POST /auth/login sets the HttpOnly `ppm_session`
+    cookie; `Authorization: Bearer <token>` is accepted as an alternative.
+    Base roles: ADMIN, DIVISION_LEAD, CONTRIBUTOR, VIEWER (VIEWER is hard
+    read-only). Project classification (internal/restricted/confidential)
+    conceals unauthorized projects with uniform 404s.
     Governance invariants (OCC, dependency locking, InfoSec gates, audit) are enforced
     server-side and mirrored by PostgreSQL triggers.
 servers:
   - url: http://localhost:4000/api
 tags:
   - name: system
+  - name: auth
   - name: users
   - name: projects
   - name: tasks
@@ -21,7 +26,8 @@ tags:
   - name: reports
 
 security:
-  - userIdHeader: []
+  - sessionCookie: []
+  - bearerToken: []
 
 paths:
   /health:
@@ -39,19 +45,249 @@ paths:
                 properties:
                   ok: { type: boolean, example: true }
 
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Local login (sets HttpOnly ppm_session cookie)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        "200":
+          description: Logged in; Set-Cookie ppm_session=<token>; HttpOnly; SameSite=Lax; Path=/
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+                  mustChangePassword: { type: boolean }
+        "401":
+          description: AUTH_FAILED — identical for unknown email and wrong password
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: ACCOUNT_DISABLED
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "423":
+          description: ACCOUNT_LOCKED — detail.retryAfterSeconds
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: RATE_LIMITED — max 10 attempts/min per IP+email
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Logout (deletes the session, clears the cookie; idempotent)
+      security: []
+      responses:
+        "204": { description: Logged out }
+
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: Current identity
+      responses:
+        "200":
+          description: The authenticated user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /auth/change-password:
+    post:
+      tags: [auth]
+      summary: Change own password (clears mustChangePassword; revokes all OTHER sessions)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string, format: password }
+                newPassword: { type: string, format: password, description: "min length PASSWORD_MIN_LENGTH (default 10)" }
+      responses:
+        "204": { description: Changed }
+        "400": { $ref: "#/components/responses/Validation" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /auth/revoke-all:
+    post:
+      tags: [auth]
+      summary: Revoke ALL own sessions (including the current one)
+      responses:
+        "204": { description: Revoked }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /auth/entra/login:
+    get:
+      tags: [auth]
+      summary: Start Entra ID SSO (302 to Microsoft; 501 NOT_CONFIGURED without AZURE_* env)
+      security: []
+      responses:
+        "302": { description: Redirect to the Entra authorization endpoint }
+        "501":
+          description: NOT_CONFIGURED
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /auth/entra/callback:
+    get:
+      tags: [auth]
+      summary: Entra ID SSO callback (creates a normal session, 302 to /)
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema: { type: string }
+        - name: state
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "302": { description: Session created; redirect into the app }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403":
+          description: ACCOUNT_DISABLED — unknown or deactivated local account
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "501":
+          description: NOT_CONFIGURED
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /users:
     get:
       tags: [users]
-      summary: Demo user directory (role switcher)
-      security: []
+      summary: Full user directory (ADMIN only)
       responses:
         "200":
-          description: All selectable demo users
+          description: All users incl. baseRole, privileges, isActive
           content:
             application/json:
               schema:
                 type: array
                 items: { $ref: "#/components/schemas/User" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [users]
+      summary: Create a user (ADMIN only; generated temporary password, mustChangePassword=true)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, division, baseRole]
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                division: { type: string }
+                site: { type: string, nullable: true }
+                baseRole: { type: string, enum: [ADMIN, DIVISION_LEAD, CONTRIBUTOR, VIEWER] }
+                privileges:
+                  type: array
+                  items: { type: string, enum: [security_reviewer, steering] }
+      responses:
+        "201":
+          description: Created — temporaryPassword is returned ONCE and never logged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+                  temporaryPassword: { type: string }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /users/{id}:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    patch:
+      tags: [users]
+      summary: Update a user (ADMIN only; deactivating revokes their sessions)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                baseRole: { type: string, enum: [ADMIN, DIVISION_LEAD, CONTRIBUTOR, VIEWER] }
+                privileges:
+                  type: array
+                  items: { type: string, enum: [security_reviewer, steering] }
+                isActive: { type: boolean }
+                division: { type: string }
+                site: { type: string, nullable: true }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /users/{id}/reset-password:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    post:
+      tags: [users]
+      summary: Reset a user's password (ADMIN only; revokes sessions, forces change)
+      responses:
+        "200":
+          description: New temporary password — returned ONCE, never logged/audited
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  temporaryPassword: { type: string }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /users/{id}/unlock:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    post:
+      tags: [users]
+      summary: Clear a user's login-failure lockout (ADMIN only)
+      responses:
+        "204": { description: Unlocked }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /bootstrap:
     get:
@@ -96,7 +332,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthenticated" }
     post:
       tags: [projects]
-      summary: Create a project (division_lead or group_manager)
+      summary: Create a project (ADMIN or DIVISION_LEAD; non-ADMIN classification is forced to internal)
       requestBody:
         required: true
         content:
@@ -302,7 +538,7 @@ paths:
       - $ref: "#/components/parameters/EntityId"
     post:
       tags: [approvals]
-      summary: Decide an approval (security_reviewer only; recomputes project gate)
+      summary: Decide an approval (requires the security_reviewer PRIVILEGE; recomputes project gate)
       requestBody:
         required: true
         content:
@@ -388,11 +624,15 @@ paths:
 
 components:
   securitySchemes:
-    userIdHeader:
+    sessionCookie:
       type: apiKey
-      in: header
-      name: x-user-id
-      description: UUID of a demo user (see GET /users)
+      in: cookie
+      name: ppm_session
+      description: Opaque session token set by POST /auth/login (HttpOnly; SameSite=Lax)
+    bearerToken:
+      type: http
+      scheme: bearer
+      description: The same session token, sent as Authorization Bearer
 
   parameters:
     EntityId:
@@ -403,7 +643,7 @@ components:
 
   responses:
     Unauthenticated:
-      description: Missing/unknown x-user-id
+      description: Missing, invalid or expired session (AUTH_REQUIRED)
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -439,7 +679,9 @@ components:
       properties:
         error:
           type: string
-          enum: [UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, VERSION_CONFLICT, DEPENDENCY_LOCKED, SECURITY_GATE, VALIDATION, INTERNAL]
+          enum: [AUTH_REQUIRED, AUTH_FAILED, ACCOUNT_LOCKED, ACCOUNT_DISABLED, RATE_LIMITED,
+                 PASSWORD_CHANGE_REQUIRED, NOT_CONFIGURED, FORBIDDEN, NOT_FOUND, VERSION_CONFLICT,
+                 DEPENDENCY_LOCKED, SECURITY_GATE, VALIDATION, INTERNAL]
         message: { type: string }
         detail:
           type: object
@@ -453,7 +695,12 @@ components:
         email: { type: string }
         division: { type: string, enum: [ops, infra, ea, infosec, data, bizapps, management] }
         site: { type: string, nullable: true, enum: [sabodala, saly, hq, null] }
-        role: { type: string, enum: [member, site_manager, division_lead, group_manager, security_reviewer] }
+        baseRole: { type: string, enum: [ADMIN, DIVISION_LEAD, CONTRIBUTOR, VIEWER] }
+        privileges:
+          type: array
+          items: { type: string, enum: [security_reviewer, steering] }
+        isActive: { type: boolean }
+        mustChangePassword: { type: boolean }
         createdAt: { type: string, format: date-time }
 
     Project:
@@ -471,6 +718,10 @@ components:
         riskTags:
           type: array
           items: { type: string }
+        classification:
+          type: string
+          enum: [internal, restricted, confidential]
+          description: Read scoping (ADR-005) — unauthorized projects are concealed with uniform 404s
         overallStatus: { type: string, enum: [draft, active, at_risk, on_hold, complete] }
         securityGateStatus: { type: string, enum: [not_required, pending, approved, rejected] }
         ownerId: { type: string, format: uuid, nullable: true }
@@ -491,6 +742,10 @@ components:
         riskTags:
           type: array
           items: { type: string }
+        classification:
+          type: string
+          enum: [internal, restricted, confidential]
+          description: Only ADMIN may set it; forced to internal otherwise (403 on change)
         overallStatus: { type: string }
         ownerId: { type: string, format: uuid }
 

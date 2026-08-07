@@ -1,6 +1,6 @@
 # Execution Status
 
-Updated: 2026-08-07 (session: goal bootstrap + Wave 1 identity slice)
+Updated: 2026-08-07 (Wave 1 identity slice COMPLETE and verified)
 
 ## Where we are
 
@@ -11,9 +11,14 @@ Updated: 2026-08-07 (session: goal bootstrap + Wave 1 identity slice)
 - **Current wave**: Wave 1 (E00–E04), starting with the identity/access vertical (E02+E03 core)
   because every later epic depends on real users, sessions, base roles, and the policy engine.
 
-## Active slice: Identity & Access Foundation (E02 + E03 core)
+## Completed slice: Identity & Access Foundation (E02 + E03 core) — DONE
 
-Scope of this slice:
+Verified: server 67/67 tests (13 suites) · web typed build clean · live E2E smoke
+(login cookie flow, confidential concealment for unauthorized user, VIEWER 403 on
+writes + read-only UI, lockout at 5th failure). Contract: docs/API_CONTRACT.md v2.
+Seed dev credentials in server/README.md (Dev!<Firstname>2026).
+
+Scope delivered:
 1. Schema migration `db/init/` → users gain base_role (ADMIN/DIVISION_LEAD/CONTRIBUTOR/VIEWER),
    is_active, must_change_password; new user_credentials, user_sessions, login_attempts;
    projects gain classification (internal/restricted/confidential).

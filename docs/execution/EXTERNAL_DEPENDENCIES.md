@@ -5,7 +5,7 @@ external credential/resource is missing.
 
 | Integration | Code status | Test status | Needed to activate | Validation once available |
 |---|---|---|---|---|
-| Microsoft Entra ID OIDC | in progress this slice (adapter contract + fake) | pending | AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, redirect URI registration | login round-trip on staging, group mapping check |
+| Microsoft Entra ID OIDC | COMPLETE (adapter + config contract + fake) | GREEN (entra.test.js) | AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, redirect URI registration | login round-trip on staging, group mapping check |
 | SMTP email | not started (E20) | — | SMTP_URL creds | send test digest to sink + real inbox |
 | Microsoft Teams | not started (E20) | — | Teams webhook/app registration | post test card |
 | SharePoint/OneDrive documents | not started (E24) | — | Graph app registration | upload/download round-trip |

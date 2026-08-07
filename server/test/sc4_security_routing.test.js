@@ -59,7 +59,7 @@ describe('SC4 — InfoSec routing and approval gate', () => {
 
   it('a non-InfoSec user attempting the decision -> 403 FORBIDDEN', async () => {
     const res = await srv.api('POST', `/api/approvals/${approval.id}/decision`, {
-      user: USERS.awa, // ops site_manager
+      user: USERS.awa, // ops CONTRIBUTOR without the security_reviewer privilege
       body: { decision: 'approved' },
     });
     assert.equal(res.status, 403);
