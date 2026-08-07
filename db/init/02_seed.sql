@@ -4,6 +4,8 @@
 
 -- Base roles per ADR-004 mapping (group_manager->ADMIN, division_lead->DIVISION_LEAD,
 -- site_manager/member->CONTRIBUTOR, security_reviewer->CONTRIBUTOR + privilege).
+-- E05 invariant 4: Aminata holds the 'steering' privilege; Troy stays ADMIN
+-- WITHOUT steering — Steering approval capability is independent of Admin.
 INSERT INTO users (id, name, email, division, site, base_role, privileges) VALUES
     ('00000000-0000-0000-0000-000000000001', 'Awa Ndiaye',     'awa.ndiaye@opspm360.local',     'ops',        'sabodala', 'CONTRIBUTOR',   '{}'),
     ('00000000-0000-0000-0000-000000000002', 'Moussa Diallo',  'moussa.diallo@opspm360.local',  'infra',      'saly',     'DIVISION_LEAD', '{}'),
@@ -11,7 +13,7 @@ INSERT INTO users (id, name, email, division, site, base_role, privileges) VALUE
     ('00000000-0000-0000-0000-000000000004', 'Troy Coordinator','troy@opspm360.local',          'management', 'hq',       'ADMIN',         '{}'),
     ('00000000-0000-0000-0000-000000000005', 'Fatou Sarr',     'fatou.sarr@opspm360.local',     'data',       'hq',       'DIVISION_LEAD', '{}'),
     ('00000000-0000-0000-0000-000000000006', 'Ibrahima Ba',    'ibrahima.ba@opspm360.local',    'bizapps',    'hq',       'CONTRIBUTOR',   '{}'),
-    ('00000000-0000-0000-0000-000000000007', 'Aminata Fall',   'aminata.fall@opspm360.local',   'ea',         'hq',       'DIVISION_LEAD', '{}'),
+    ('00000000-0000-0000-0000-000000000007', 'Aminata Fall',   'aminata.fall@opspm360.local',   'ea',         'hq',       'DIVISION_LEAD', '{steering}'),
     ('00000000-0000-0000-0000-000000000008', 'Aissatou Diop',  'viewer@opspm360.local',         'management', 'hq',       'VIEWER',        '{}');
 
 -- ----------------------------------------------------------------------------

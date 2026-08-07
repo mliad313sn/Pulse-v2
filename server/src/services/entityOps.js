@@ -13,16 +13,22 @@
  */
 import { randomUUID } from 'node:crypto';
 import { forbidden, notFound, validation, versionConflict } from '../errors.js';
-import { assertCanAdvance, assertLifecycleStep, LIFECYCLE_STAGES } from './gates.js';
+import { assertCanAdvance, assertLifecycleChange, LIFECYCLE_STAGES } from './gates.js';
 import { applyUpdate } from './occ.js';
 import {
   CLASSIFICATIONS, canManageProjectWork, canReadProject, canSetClassification,
-  canWriteRoadblock, canWriteTask,
+  canWriteMilestone, canWriteRoadblock, canWriteTask,
 } from './policy.js';
 import { ensureSecurityRouting } from './securityRouting.js';
 import { nowIso } from './time.js';
 
 export const OPERATING_STATUSES = ['NOT_STARTED', 'IN_PROGRESS', 'ON_HOLD', 'COMPLETED', 'CANCELLED'];
+
+export const MILESTONE_TYPES = [
+  'STANDARD', 'SECURITY_GATE', 'SITE_READINESS', 'UAT', 'GO_LIVE',
+  'GOVERNANCE_GATE', 'OPERATIONAL_HANDOVER',
+];
+export const MILESTONE_STATUSES = ['NOT_STARTED', 'IN_PROGRESS', 'DONE', 'SLIPPED', 'CANCELLED'];
 
 export const ENTITY_DEFS = {
   project: {
@@ -32,6 +38,9 @@ export const ENTITY_DEFS = {
       'riskTags', 'classification', 'overallStatus', 'ownerId',
       'portfolioId', 'programId', 'sponsorId', 'lifecycleStage',
       'operatingStatus', 'engagedDivisions', 'sites',
+      // E05 governance fields (all nullable; per-manage-level write policy).
+      'startDate', 'targetDate', 'actualEndDate', 'acceptanceCriteria',
+      'deploymentPlan', 'supportOwnerId', 'closureSummary', 'cancelReason', 'holdReason',
     ],
     // Server-managed fields a client may never write (PATCH attempt -> 400).
     immutable: ['code'],
@@ -52,6 +61,15 @@ export const ENTITY_DEFS = {
       operatingStatus: 'NOT_STARTED',
       engagedDivisions: [],
       sites: [],
+      startDate: null,
+      targetDate: null,
+      actualEndDate: null,
+      acceptanceCriteria: null,
+      deploymentPlan: null,
+      supportOwnerId: null,
+      closureSummary: null,
+      cancelReason: null,
+      holdReason: null,
     }),
     enums: {
       cgeitTag: ['strategic_alignment', 'value_delivery', 'risk_optimization', 'resource_optimization', 'performance_measurement'],
@@ -60,6 +78,33 @@ export const ENTITY_DEFS = {
       lifecycleStage: LIFECYCLE_STAGES,
       operatingStatus: OPERATING_STATUSES,
     },
+    dateFields: ['startDate', 'targetDate', 'actualEndDate'],
+    userRefs: ['supportOwnerId'],
+  },
+  milestone: {
+    required: ['projectId', 'title'],
+    parentRef: 'projectId',
+    writable: [
+      'projectId', 'title', 'description', 'type', 'status', 'ownerId',
+      'baselineDue', 'forecastDue', 'actualCompleted', 'weight',
+    ],
+    defaults: () => ({
+      description: null,
+      type: 'STANDARD',
+      status: 'NOT_STARTED',
+      ownerId: null,
+      baselineDue: null,
+      forecastDue: null,
+      actualCompleted: null,
+      weight: 1,
+    }),
+    enums: {
+      type: MILESTONE_TYPES,
+      status: MILESTONE_STATUSES,
+    },
+    dateFields: ['baselineDue', 'forecastDue', 'actualCompleted'],
+    userRefs: ['ownerId'],
+    intFields: { weight: 1 }, // integer >= 1 (progress weighting, plan §23)
   },
   task: {
     required: ['projectId', 'title'],
@@ -117,6 +162,67 @@ export function assertEnums(def, fields) {
     if (fields[key] !== undefined && fields[key] !== null && !allowed.includes(fields[key])) {
       throw validation(`Invalid value for ${key}: ${fields[key]}`, { field: key, allowed });
     }
+  }
+}
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Structural field rules beyond enums (shared by create/PATCH/sync):
+ *   - def.intFields  {field: min} -> integer >= min (e.g. milestone weight >= 1);
+ *   - def.dateFields [field]      -> null or ISO date 'YYYY-MM-DD' (matches the
+ *     DATE columns in Postgres so both repos round-trip identically).
+ */
+export function assertFieldRules(def, fields) {
+  for (const [key, min] of Object.entries(def.intFields ?? {})) {
+    const v = fields[key];
+    if (v === undefined) continue;
+    if (!Number.isInteger(v) || v < min) {
+      throw validation(`${key} must be an integer >= ${min}`, { field: key });
+    }
+  }
+  for (const key of def.dateFields ?? []) {
+    const v = fields[key];
+    if (v === undefined || v === null) continue;
+    if (typeof v !== 'string' || !DATE_RE.test(v)) {
+      throw validation(`${key} must be an ISO date (YYYY-MM-DD)`, { field: key });
+    }
+  }
+}
+
+/** def.userRefs: fields that must reference an existing user (400 otherwise). */
+export async function assertUserRefs(repo, def, fields) {
+  for (const key of def.userRefs ?? []) {
+    if (fields[key] != null && !(await repo.getUser(fields[key]))) {
+      throw validation(`Unknown ${key}: ${fields[key]}`, { field: key });
+    }
+  }
+}
+
+/**
+ * Operating-status transition rules (plan §12.2), shared by create/PATCH/sync.
+ *   - CANCELLED is TERMINAL: once there, operatingStatus can never change again;
+ *   - moving to CANCELLED requires a cancelReason (in this payload or already set);
+ *   - moving to ON_HOLD requires a holdReason likewise.
+ * `current` is null for creates (defaults NOT_STARTED unless the payload says otherwise).
+ */
+export function assertOperatingStatusChange(current, fields) {
+  const next = fields.operatingStatus;
+  if (next === undefined || next === current?.operatingStatus) return;
+  if (current?.operatingStatus === 'CANCELLED') {
+    throw validation('operatingStatus CANCELLED is terminal: no further operating-status changes', {
+      field: 'operatingStatus',
+    });
+  }
+  if (next === 'CANCELLED' && !(fields.cancelReason ?? current?.cancelReason)) {
+    throw validation('cancelReason is required when moving operatingStatus to CANCELLED', {
+      field: 'cancelReason',
+    });
+  }
+  if (next === 'ON_HOLD' && !(fields.holdReason ?? current?.holdReason)) {
+    throw validation('holdReason is required when moving operatingStatus to ON_HOLD', {
+      field: 'holdReason',
+    });
   }
 }
 
@@ -193,6 +299,12 @@ export function assertOperationalWrite(actor, kind, current, project, members) {
     if (!canWriteRoadblock(actor, project, current, members)) {
       throw forbidden('Roadblock updates require project management authority, membership, ownership, or being the reporter');
     }
+    return;
+  }
+  if (kind === 'milestone') {
+    if (!canWriteMilestone(actor, project, current, members)) {
+      throw forbidden('Milestone writes require project management authority or being the milestone owner');
+    }
   }
 }
 
@@ -213,6 +325,8 @@ export async function createEntity(repo, actor, kind, payload, options = {}) {
     }
   }
   assertEnums(def, fields);
+  assertFieldRules(def, fields);
+  await assertUserRefs(repo, def, fields);
 
   if (def.parentRef) {
     const parent = await repo.get('project', fields[def.parentRef]);
@@ -238,6 +352,8 @@ export async function createEntity(repo, actor, kind, payload, options = {}) {
     delete fields.classification;
   }
   if (kind === 'project') {
+    // Creating straight into CANCELLED/ON_HOLD still demands the reason fields.
+    assertOperatingStatusChange(null, fields);
     await assertProjectRefs(repo, fields);
   }
   for (const [field, actorProp] of Object.entries(def.actorDefaults ?? {})) {
@@ -298,21 +414,9 @@ export async function patchEntity(repo, actor, kind, id, body) {
 
   assertImmutableFields(def, current, body ?? {});
   const fields = pickWritable(def, body);
-  assertEnums(def, fields);
-
-  // Only ADMIN may change a project's classification (403 otherwise).
-  if (kind === 'project' && fields.classification !== undefined
-      && fields.classification !== current.classification && !canSetClassification(actor)) {
-    throw forbidden('Only ADMIN may set or change a project classification');
-  }
+  await assertUpdateBusinessRules(repo, actor, kind, current, fields);
   if (Object.keys(fields).length === 0) {
     throw validation('No writable fields in payload');
-  }
-  if (kind === 'project') {
-    if (fields.lifecycleStage !== undefined && fields.lifecycleStage !== current.lifecycleStage) {
-      assertLifecycleStep(current.lifecycleStage, fields.lifecycleStage);
-    }
-    await assertProjectRefs(repo, fields);
   }
 
   const { outcome, next } = applyUpdate(current, { baseVersion: body.version, fields }, { strict: true });
@@ -323,9 +427,52 @@ export async function patchEntity(repo, actor, kind, id, body) {
   await runTaskGates(repo, kind, current, fields);
 
   const written = await repo.update(kind, next);
+  await recordLifecycleCorrection(repo, actor, kind, current, written);
   await ensureSecurityRouting(repo, kind, written);
   // See createEntity: only projects can be mutated again by security routing.
   return kind === 'project' ? repo.get(kind, id) : written;
+}
+
+/**
+ * Business rules every UPDATE path (direct PATCH and offline sync) must run:
+ * enums, structural field rules, user references, ADMIN-only classification,
+ * the E05 lifecycle guard (gate process only, except ADMIN backward step),
+ * operating-status transition rules, and project reference validation.
+ */
+export async function assertUpdateBusinessRules(repo, actor, kind, current, fields) {
+  const def = ENTITY_DEFS[kind];
+  assertEnums(def, fields);
+  assertFieldRules(def, fields);
+  await assertUserRefs(repo, def, fields);
+  if (kind !== 'project') return;
+
+  // Only ADMIN may change a project's classification (403 otherwise).
+  if (fields.classification !== undefined
+      && fields.classification !== current.classification && !canSetClassification(actor)) {
+    throw forbidden('Only ADMIN may set or change a project classification');
+  }
+  if (fields.lifecycleStage !== undefined && fields.lifecycleStage !== current.lifecycleStage) {
+    assertLifecycleChange(actor, current.lifecycleStage, fields.lifecycleStage);
+  }
+  assertOperatingStatusChange(current, fields);
+  await assertProjectRefs(repo, fields);
+}
+
+/**
+ * The one legal direct lifecycle write is the ADMIN one-step-backward
+ * correction (E05). Beyond the regular UPDATE audit row, record an explicit
+ * LIFECYCLE_CORRECTION entry so corrections are separately traceable.
+ * Shared by PATCH and sync updates.
+ */
+export async function recordLifecycleCorrection(repo, actor, kind, before, after) {
+  if (kind !== 'project' || !after || before.lifecycleStage === after.lifecycleStage) return;
+  await repo.appendAudit({
+    entityType: 'projects',
+    entityId: before.id,
+    action: 'LIFECYCLE_CORRECTION',
+    actorId: actor?.id ?? null,
+    newData: { from: before.lifecycleStage, to: after.lifecycleStage },
+  });
 }
 
 /** Gate checks shared by PATCH and sync updates. Throws 423 typed errors. */

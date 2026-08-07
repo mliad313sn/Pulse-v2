@@ -3,6 +3,8 @@ import {
   cn,
   LIFECYCLE_META,
   LIFECYCLE_STAGES,
+  MILESTONE_STATUS_META,
+  MILESTONE_TYPE_META,
   OPERATING_STATUS_META,
   PROJECT_STATUS_META,
   SEVERITY_META,
@@ -10,7 +12,10 @@ import {
   titleCaseTag,
 } from "@/lib/utils";
 import type {
+  GateDecision,
   LifecycleStage,
+  MilestoneStatus,
+  MilestoneType,
   OperatingStatus,
   ProjectClassification,
   ProjectStatus,
@@ -18,7 +23,7 @@ import type {
   SecurityGateStatus,
   TaskStatus,
 } from "@/lib/types";
-import { EyeOffIcon, LockIcon, ShieldCheckIcon, ShieldIcon } from "./Icons";
+import { EyeOffIcon, FlagIcon, LockIcon, ScaleIcon, ShieldCheckIcon, ShieldIcon } from "./Icons";
 
 /** Base rounded pill shell shared by every badge. */
 export function Pill({
@@ -190,6 +195,56 @@ export function OperatingStatusBadge({ status }: { status?: OperatingStatus | nu
   return (
     <Pill title="Operating status" className={meta.badge}>
       {meta.label}
+    </Pill>
+  );
+}
+
+/** Milestone type chip — GO_LIVE gets a flag icon accent. */
+export function MilestoneTypeBadge({ type }: { type: MilestoneType }) {
+  const meta = MILESTONE_TYPE_META[type] ?? MILESTONE_TYPE_META.STANDARD;
+  return (
+    <Pill title="Milestone type" className={cn("gap-1", meta.badge)}>
+      {type === "GO_LIVE" && <FlagIcon className="h-3.5 w-3.5" />}
+      {meta.label}
+    </Pill>
+  );
+}
+
+export function MilestoneStatusBadge({ status }: { status: MilestoneStatus }) {
+  const meta = MILESTONE_STATUS_META[status] ?? MILESTONE_STATUS_META.NOT_STARTED;
+  return (
+    <Pill className={cn("gap-1.5", meta.badge)}>
+      <span className={cn("h-1.5 w-1.5 rounded-full", meta.dot)} />
+      {meta.label}
+    </Pill>
+  );
+}
+
+/** APPROVED (emerald) / REJECTED (rose) pill for the gate ledger + banners. */
+export function GateDecisionPill({ decision }: { decision: GateDecision }) {
+  const approved = decision === "APPROVED";
+  return (
+    <Pill
+      className={
+        approved
+          ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300"
+          : "bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300"
+      }
+    >
+      {approved ? "Approved" : "Rejected"}
+    </Pill>
+  );
+}
+
+/** Steering Committee privilege chip (gate decisions requiring steering authority). */
+export function SteeringPill({ className }: { className?: string }) {
+  return (
+    <Pill
+      title="Steering Committee authority required"
+      className={cn("gap-1 bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300", className)}
+    >
+      <ScaleIcon className="h-3.5 w-3.5" />
+      Steering
     </Pill>
   );
 }

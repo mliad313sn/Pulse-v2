@@ -46,10 +46,20 @@ export const validation = (message = 'Bad payload', detail = undefined) =>
 export const versionConflict = (serverState) =>
   new ApiError(409, 'VERSION_CONFLICT', 'Version mismatch: entity was modified concurrently', { serverState });
 
-/** E04 lifecycle guard: PATCH may move lifecycleStage only ONE step at a time. */
-export const invalidLifecycleTransition = (from, to) =>
-  new ApiError(400, 'INVALID_LIFECYCLE_TRANSITION',
-    `Lifecycle stage may only move one step forward or backward (${from} -> ${to})`, { from, to });
+/** E05: gate request refused because entry requirements are unmet (422). */
+export const gateRequirementsNotMet = (missing) =>
+  new ApiError(422, 'GATE_REQUIREMENTS_NOT_MET',
+    'Gate requirements are not met', { missing });
+
+/** E05: G2 (PLANNING -> EXECUTION) decisions demand the steering privilege — even from ADMIN. */
+export const steeringApprovalRequired = () =>
+  new ApiError(403, 'STEERING_APPROVAL_REQUIRED',
+    'PLANNING -> EXECUTION requires an authorized Steering Committee approver (steering privilege)');
+
+/** E05: only one PENDING gate request may exist per project. */
+export const gateRequestPending = (pendingRequestId) =>
+  new ApiError(409, 'GATE_REQUEST_PENDING',
+    'A gate request is already pending for this project', { pendingRequestId });
 
 export const dependencyLocked = (detail = undefined) =>
   new ApiError(423, 'DEPENDENCY_LOCKED', 'Prerequisite task is not complete', detail);

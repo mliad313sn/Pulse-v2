@@ -167,14 +167,25 @@ CREATE TABLE projects (
     portfolio_id         UUID REFERENCES portfolios(id),
     program_id           UUID REFERENCES programs(id),
     sponsor_id           UUID REFERENCES users(id),
-    -- E04 slice: data + validation only (single-step transitions); the G0-G5
-    -- gate engine arrives with E05.
+    -- E05: lifecycle transitions go through the gate engine (gate_requests +
+    -- approval_ledger); direct stage writes are service-refused except the
+    -- ADMIN one-step-backward correction.
     lifecycle_stage      TEXT NOT NULL DEFAULT 'IDEA'
                          CHECK (lifecycle_stage IN ('IDEA', 'INITIATION', 'PLANNING', 'EXECUTION',
                                                     'DEPLOYMENT', 'RUN', 'CLOSED')),
     operating_status     TEXT NOT NULL DEFAULT 'NOT_STARTED'
                          CHECK (operating_status IN ('NOT_STARTED', 'IN_PROGRESS', 'ON_HOLD',
                                                      'COMPLETED', 'CANCELLED')),
+    -- E05 governance fields (all nullable; dates are DATE, wire format YYYY-MM-DD).
+    start_date           DATE,
+    target_date          DATE,
+    actual_end_date      DATE,
+    acceptance_criteria  TEXT,
+    deployment_plan      TEXT,
+    support_owner_id     UUID REFERENCES users(id),
+    closure_summary      TEXT,
+    cancel_reason        TEXT,   -- required by the service when operating_status -> CANCELLED
+    hold_reason          TEXT,   -- required by the service when operating_status -> ON_HOLD
     engaged_divisions    TEXT[] NOT NULL DEFAULT '{}',
     sites                TEXT[] NOT NULL DEFAULT '{}',  -- additional sites; `site` stays primary
     cgeit_tag            TEXT NOT NULL DEFAULT 'value_delivery'
@@ -251,6 +262,93 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER trg_member_viewer_guard
     BEFORE INSERT OR UPDATE ON project_members
     FOR EACH ROW EXECUTE FUNCTION forbid_viewer_lead_roles();
+
+-- ----------------------------------------------------------------------------
+-- E08 (minimal core) — Milestones. Weighted, typed, OCC-versioned like other
+-- collaborative entities. Project progress is COMPUTED from these (plan §23,
+-- invariant 15) — there is no stored overall percentage anywhere.
+-- ----------------------------------------------------------------------------
+CREATE TABLE milestones (
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id       UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title            TEXT NOT NULL,
+    description      TEXT,
+    type             TEXT NOT NULL DEFAULT 'STANDARD'
+                     CHECK (type IN ('STANDARD', 'SECURITY_GATE', 'SITE_READINESS', 'UAT',
+                                     'GO_LIVE', 'GOVERNANCE_GATE', 'OPERATIONAL_HANDOVER')),
+    status           TEXT NOT NULL DEFAULT 'NOT_STARTED'
+                     CHECK (status IN ('NOT_STARTED', 'IN_PROGRESS', 'DONE', 'SLIPPED', 'CANCELLED')),
+    owner_id         UUID REFERENCES users(id),
+    baseline_due     DATE,
+    forecast_due     DATE,
+    actual_completed DATE,
+    weight           INTEGER NOT NULL DEFAULT 1 CHECK (weight >= 1),
+    version          INTEGER NOT NULL DEFAULT 1,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_milestones_project ON milestones(project_id);
+CREATE INDEX idx_milestones_owner ON milestones(owner_id);
+
+-- ----------------------------------------------------------------------------
+-- E05 — Gate requests (plan §13). One PENDING request per project at a time
+-- (partial unique index backstop; the service checks first for a friendly 409).
+-- ----------------------------------------------------------------------------
+CREATE TABLE gate_requests (
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id       UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    gate             TEXT NOT NULL CHECK (gate IN ('G0', 'G1', 'G2', 'G3', 'G4', 'G5')),
+    from_stage       TEXT NOT NULL,
+    to_stage         TEXT NOT NULL,
+    requested_by     UUID NOT NULL REFERENCES users(id),
+    requested_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    note             TEXT,
+    disposition_note TEXT,   -- G5: explicit disposition of outstanding work
+    status           TEXT NOT NULL DEFAULT 'PENDING'
+                     CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED')),
+    decided_by       UUID REFERENCES users(id),
+    decided_at       TIMESTAMPTZ,
+    decision_note    TEXT
+);
+
+CREATE INDEX idx_gate_requests_project ON gate_requests(project_id);
+CREATE UNIQUE INDEX uniq_gate_requests_pending ON gate_requests(project_id) WHERE status = 'PENDING';
+
+-- ----------------------------------------------------------------------------
+-- E05 — Approval ledger (plan §14, invariant 11). IMMUTABLE logical record of
+-- every gate decision: no application update/delete endpoints exist and the
+-- trigger below forbids UPDATE/DELETE at the database layer (like audit_logs).
+-- ----------------------------------------------------------------------------
+CREATE TABLE approval_ledger (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id      UUID NOT NULL REFERENCES projects(id),
+    gate            TEXT NOT NULL CHECK (gate IN ('G0', 'G1', 'G2', 'G3', 'G4', 'G5')),
+    from_stage      TEXT NOT NULL,
+    to_stage        TEXT NOT NULL,
+    project_version INTEGER NOT NULL,   -- project version at decision time (pre-transition)
+    requested_by    UUID NOT NULL REFERENCES users(id),
+    requested_at    TIMESTAMPTZ NOT NULL,
+    decided_by      UUID NOT NULL REFERENCES users(id),
+    decided_at      TIMESTAMPTZ NOT NULL,
+    authority_type  TEXT NOT NULL CHECK (authority_type IN ('STEERING', 'ADMIN', 'DIVISION_LEAD')),
+    decision        TEXT NOT NULL CHECK (decision IN ('APPROVED', 'REJECTED')),
+    note            TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_approval_ledger_project ON approval_ledger(project_id);
+
+CREATE OR REPLACE FUNCTION forbid_ledger_mutation() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'approval_ledger is an immutable ledger: % is forbidden', TG_OP
+        USING ERRCODE = 'raise_exception';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_approval_ledger_immutable
+    BEFORE UPDATE OR DELETE ON approval_ledger
+    FOR EACH ROW EXECUTE FUNCTION forbid_ledger_mutation();
 
 -- ----------------------------------------------------------------------------
 -- Tasks — dependency_lock points at the prerequisite task (Infra <-> Ops handshake)
@@ -394,6 +492,11 @@ CREATE TRIGGER trg_audit_programs  AFTER INSERT OR UPDATE OR DELETE ON programs
     FOR EACH ROW EXECUTE FUNCTION write_audit_log();
 CREATE TRIGGER trg_audit_members   AFTER INSERT OR UPDATE OR DELETE ON project_members
     FOR EACH ROW EXECUTE FUNCTION write_audit_log();
+CREATE TRIGGER trg_audit_milestones AFTER INSERT OR UPDATE OR DELETE ON milestones
+    FOR EACH ROW EXECUTE FUNCTION write_audit_log();
+CREATE TRIGGER trg_audit_gate_requests AFTER INSERT OR UPDATE OR DELETE ON gate_requests
+    FOR EACH ROW EXECUTE FUNCTION write_audit_log();
+-- approval_ledger is itself a governance record (like audit_logs) — not audited.
 
 -- ----------------------------------------------------------------------------
 -- GOVERNANCE: security routing

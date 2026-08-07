@@ -3,17 +3,17 @@
  * Each operation is recorded into sync_queue, then processed with OCC + LWW,
  * governance gates, and security routing — per the contract.
  */
-import { ApiError, forbidden, validation } from '../errors.js';
+import { ApiError, validation } from '../errors.js';
 import { applyUpdate } from './occ.js';
 import {
-  ENTITY_DEFS, assertEnums, assertImmutableFields, assertOperationalWrite,
-  assertProjectRefs, createEntity, pickWritable, runTaskGates,
+  ENTITY_DEFS, assertImmutableFields, assertOperationalWrite,
+  assertUpdateBusinessRules, createEntity, pickWritable,
+  recordLifecycleCorrection, runTaskGates,
 } from './entityOps.js';
-import { assertLifecycleStep } from './gates.js';
-import { assertCan, canReadProject, canSetClassification } from './policy.js';
+import { assertCan, canReadProject } from './policy.js';
 import { ensureSecurityRouting } from './securityRouting.js';
 
-const ENTITIES = ['task', 'project', 'roadblock'];
+const ENTITIES = ['task', 'project', 'roadblock', 'milestone'];
 
 export async function processSyncBatch(repo, user, body) {
   if (!body || typeof body.clientId !== 'string' || body.clientId.length === 0) {
@@ -111,20 +111,11 @@ async function processOperation(repo, user, op) {
     const def = ENTITY_DEFS[kind];
     assertImmutableFields(def, current, op.fields ?? {});
     const fields = pickWritable(def, op.fields ?? {});
-    // Enum violations surface as `rejected` with error VALIDATION via the
+    // The same business rules as direct PATCH (enums, field rules, ADMIN-only
+    // classification, E05 lifecycle guard, operating-status rules, refs) —
+    // violations surface as `rejected` with the typed error code via the
     // ApiError handling in processSyncBatch.
-    assertEnums(def, fields);
-    if (kind === 'project') {
-      if (fields.lifecycleStage !== undefined && fields.lifecycleStage !== current.lifecycleStage) {
-        assertLifecycleStep(current.lifecycleStage, fields.lifecycleStage);
-      }
-      // Classification changes stay ADMIN-only through sync as well.
-      if (fields.classification !== undefined && fields.classification !== current.classification
-          && !canSetClassification(user)) {
-        throw forbidden('Only ADMIN may set or change a project classification');
-      }
-      await assertProjectRefs(repo, fields);
-    }
+    await assertUpdateBusinessRules(repo, user, kind, current, fields);
 
     const { outcome, next } = applyUpdate(current, {
       baseVersion: op.baseVersion,
@@ -140,6 +131,7 @@ async function processOperation(repo, user, op) {
     await runTaskGates(repo, kind, current, fields);
 
     await repo.update(kind, next);
+    await recordLifecycleCorrection(repo, user, kind, current, next);
     await ensureSecurityRouting(repo, kind, next);
     return { result: outcome, entityId: next.id, error: null };
   }

@@ -11,6 +11,15 @@ import { TABLES } from './tables.js';
 
 const clone = (v) => (v == null ? v : structuredClone(v));
 
+/** Recursively freeze (approval-ledger immutability backstop, invariant 11). */
+function deepFreeze(value) {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const key of Object.keys(value)) deepFreeze(value[key]);
+  }
+  return value;
+}
+
 export const DIVISIONS = [
   { code: 'ops', name: 'Operations', description: 'Day-to-day site management' },
   { code: 'infra', name: 'Infrastructure', description: 'Networks and systems deployment' },
@@ -43,7 +52,8 @@ function seedFixtures() {
     { id: u(4), name: 'Troy Coordinator', email: 'troy@opspm360.local', division: 'management', site: 'hq', baseRole: 'ADMIN', ...base },
     { id: u(5), name: 'Fatou Sarr', email: 'fatou.sarr@opspm360.local', division: 'data', site: 'hq', baseRole: 'DIVISION_LEAD', ...base },
     { id: u(6), name: 'Ibrahima Ba', email: 'ibrahima.ba@opspm360.local', division: 'bizapps', site: 'hq', baseRole: 'CONTRIBUTOR', ...base },
-    { id: u(7), name: 'Aminata Fall', email: 'aminata.fall@opspm360.local', division: 'ea', site: 'hq', baseRole: 'DIVISION_LEAD', ...base },
+    // E05 invariant 4: Aminata holds 'steering'; Troy stays ADMIN WITHOUT it.
+    { id: u(7), name: 'Aminata Fall', email: 'aminata.fall@opspm360.local', division: 'ea', site: 'hq', baseRole: 'DIVISION_LEAD', ...base, privileges: ['steering'] },
     { id: u(8), name: 'Aissatou Diop', email: 'viewer@opspm360.local', division: 'management', site: 'hq', baseRole: 'VIEWER', ...base },
   ];
 
@@ -65,6 +75,10 @@ function seedFixtures() {
     portfolioId: null, programId: null, sponsorId: null,
     lifecycleStage: 'IDEA', operatingStatus: 'NOT_STARTED',
     engagedDivisions: [], sites: [],
+    // E05 governance fields (mirror the SQL column defaults).
+    startDate: null, targetDate: null, actualEndDate: null,
+    acceptanceCriteria: null, deploymentPlan: null, supportOwnerId: null,
+    closureSummary: null, cancelReason: null, holdReason: null,
   };
   const projects = [
     {
@@ -168,7 +182,13 @@ export class MemoryRepo {
       pillar: [],
       portfolio: [],
       program: [],
+      milestone: [],
+      gateRequest: [],
     };
+    // E05 approval ledger — push-only (invariant 11). There is deliberately
+    // NO update/delete method for it anywhere on this repository; entries are
+    // deep-frozen on append (mirrors trg_approval_ledger_immutable).
+    this._ledger = [];
     this._members = []; // project membership rows (E04)
     // Reference data is per-instance state (admin CRUD mutates it).
     this._divisions = clone(DIVISIONS);
@@ -445,6 +465,28 @@ export class MemoryRepo {
     table[idx] = stored;
     this._recordAudit('UPDATE', kind, old, stored);
     return stored;
+  }
+
+  // ---- approval ledger (E05 — push-only, invariant 11) ---------------------
+  /**
+   * Appends an immutable gate-decision record. Entries are deep-frozen; no
+   * update or delete method exists for the ledger on this repository.
+   */
+  async appendLedger(entry) {
+    const stored = deepFreeze({
+      id: randomUUID(),
+      ...clone(entry),
+      createdAt: new Date().toISOString(),
+    });
+    this._ledger.push(stored);
+    return clone(stored);
+  }
+
+  /** Chronological (append-order) read view; optional projectId filter. */
+  async listLedger(filter = {}) {
+    let rows = this._ledger;
+    if (filter.projectId !== undefined) rows = rows.filter((e) => e.projectId === filter.projectId);
+    return rows.map(clone);
   }
 
   // ---- audit ---------------------------------------------------------------

@@ -12,7 +12,7 @@ import { baseRoleLabel, cn, divisionMeta, DIVISION_META, titleCaseTag } from "@/
 import type { BaseRole, CreateUserResponse, User } from "@/lib/types";
 import { Dialog, DialogActions, Field, FormError, OfflineHint, Select, TextInput } from "@/components/Dialog";
 import EmptyState from "@/components/EmptyState";
-import { Pill } from "@/components/Badges";
+import { Pill, SteeringPill } from "@/components/Badges";
 import { SkeletonList } from "@/components/Skeleton";
 import { CheckIcon, KeyIcon, PlusIcon } from "@/components/Icons";
 
@@ -443,14 +443,18 @@ export default function UsersTab() {
                         <span className="text-slate-400">—</span>
                       ) : (
                         <span className="flex flex-wrap gap-1">
-                          {(u.privileges ?? []).map((p) => (
-                            <Pill
-                              key={p}
-                              className="bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300"
-                            >
-                              {titleCaseTag(p)}
-                            </Pill>
-                          ))}
+                          {(u.privileges ?? []).map((p) =>
+                            p === "steering" ? (
+                              <SteeringPill key={p} />
+                            ) : (
+                              <Pill
+                                key={p}
+                                className="bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300"
+                              >
+                                {titleCaseTag(p)}
+                              </Pill>
+                            ),
+                          )}
                         </span>
                       )}
                     </td>

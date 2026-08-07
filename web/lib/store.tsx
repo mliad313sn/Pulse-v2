@@ -29,6 +29,8 @@ import type {
   Bootstrap,
   ConflictEntry,
   LoginResponse,
+  Milestone,
+  MilestoneType,
   Project,
   QueuedOp,
   Roadblock,
@@ -55,6 +57,7 @@ const IDB_STORES: idb.StoreName[] = [
   "portfolios",
   "programs",
   "members",
+  "milestones",
 ];
 
 type EntityListKey = "projects" | "tasks" | "roadblocks";
@@ -79,6 +82,7 @@ export interface AppState {
   tasks: Task[];
   roadblocks: Roadblock[];
   approvals: SecurityApproval[];
+  milestones: Milestone[];
   conflicts: ConflictEntry[];
   online: boolean;
   syncing: boolean;
@@ -125,6 +129,20 @@ interface AppActions {
   resolveConflict: (opId: string, resolution: "server" | Record<string, unknown>) => Promise<void>;
   /** Insert/refresh a project in the local cache (e.g. right after online create). */
   upsertProject: (project: Project) => void;
+  /** ONLINE-ONLY (governance mutation — never queued to the outbox). */
+  createMilestone: (input: {
+    projectId: string;
+    title: string;
+    type: MilestoneType;
+    ownerId?: string | null;
+    baselineDue?: string | null;
+    forecastDue?: string | null;
+    weight: number;
+  }) => Promise<MutateOutcome>;
+  /** ONLINE-ONLY (governance mutation — never queued to the outbox). OCC via version. */
+  updateMilestone: (id: string, fields: Partial<Milestone>) => Promise<MutateOutcome>;
+  /** Re-fetch /api/bootstrap (refreshes derived project progress after governance changes). */
+  refresh: () => Promise<void>;
   lockedReason: (task: Task) => LockedReason | null;
   lockedMessage: (task: Task) => string;
   openRoadblock: (target: RoadblockTarget) => void;
@@ -142,6 +160,7 @@ const INITIAL_STATE: AppState = {
   tasks: [],
   roadblocks: [],
   approvals: [],
+  milestones: [],
   conflicts: [],
   online: true,
   syncing: false,
@@ -365,11 +384,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const tasks = rebase(boot.tasks ?? [], "task");
       const roadblocks = rebase(boot.roadblocks ?? [], "roadblock");
       const approvals = boot.approvals ?? [];
+      // Milestone mutations are online-only (never queued) — no rebase needed.
+      const milestones = boot.milestones ?? [];
       await Promise.all([
         idb.replaceAll("projects", projects),
         idb.replaceAll("tasks", tasks),
         idb.replaceAll("roadblocks", roadblocks),
         idb.replaceAll("approvals", approvals),
+        idb.replaceAll("milestones", milestones),
         idb.setMeta("refreshedAt", boot.serverTime),
         boot.user ? idb.setMeta("currentUser", boot.user) : Promise.resolve(),
       ]);
@@ -378,6 +400,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         tasks,
         roadblocks,
         approvals,
+        milestones,
         refreshedAt: boot.serverTime ?? new Date().toISOString(),
         user: boot.user ?? s.user,
         bootLoading: false,
@@ -413,6 +436,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       tasks: [],
       roadblocks: [],
       approvals: [],
+      milestones: [],
       conflicts: [],
       outboxCount: 0,
       refreshedAt: null,
@@ -745,6 +769,100 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [setEntity],
   );
 
+  // ---- milestones (governance — ONLINE-ONLY, like approvals) ---------------
+
+  const setMilestone = useCallback(
+    (m: Milestone) => {
+      patch((prev) => ({ milestones: upsert(prev.milestones, m) }));
+      void idb.put("milestones", m);
+    },
+    [patch],
+  );
+
+  const createMilestone = useCallback(
+    async (input: {
+      projectId: string;
+      title: string;
+      type: MilestoneType;
+      ownerId?: string | null;
+      baselineDue?: string | null;
+      forecastDue?: string | null;
+      weight: number;
+    }): Promise<MutateOutcome> => {
+      const denied = guardWrite();
+      if (denied) return denied;
+      if (!stateRef.current.online) {
+        toast("Milestone changes need a live connection.", "warning");
+        return { ok: false, code: "OFFLINE" };
+      }
+      try {
+        const res = await api<unknown>("/api/milestones", {
+          method: "POST",
+          body: {
+            projectId: input.projectId,
+            title: input.title,
+            type: input.type,
+            ownerId: input.ownerId || undefined,
+            baselineDue: input.baselineDue || undefined,
+            forecastDue: input.forecastDue || undefined,
+            weight: input.weight,
+          },
+        });
+        if (looksLikeEntity(res)) setMilestone(res as unknown as Milestone);
+        // Milestones drive the derived project progress — re-read from the server.
+        await refresh();
+        return { ok: true };
+      } catch (e) {
+        if (e instanceof ApiError) {
+          toast(e.message || `Milestone not created (${e.code}).`, "error");
+          return { ok: false, code: e.code };
+        }
+        toast("Network error — milestone not created.", "error");
+        return { ok: false, code: "NETWORK" };
+      }
+    },
+    [guardWrite, toast, setMilestone, refresh],
+  );
+
+  const updateMilestone = useCallback(
+    async (id: string, fields: Partial<Milestone>): Promise<MutateOutcome> => {
+      const denied = guardWrite();
+      if (denied) return denied;
+      if (!stateRef.current.online) {
+        toast("Milestone changes need a live connection.", "warning");
+        return { ok: false, code: "OFFLINE" };
+      }
+      const current = stateRef.current.milestones.find((m) => m.id === id);
+      if (!current) return { ok: false, code: "NOT_FOUND" };
+      try {
+        const res = await api<unknown>(`/api/milestones/${id}`, {
+          method: "PATCH",
+          body: { ...fields, version: current.version ?? 1 },
+        });
+        if (looksLikeEntity(res)) {
+          setMilestone(res as unknown as Milestone);
+        } else {
+          setMilestone({ ...current, ...fields, version: (current.version ?? 1) + 1 });
+        }
+        await refresh();
+        return { ok: true };
+      } catch (e) {
+        if (e instanceof ApiError) {
+          if (e.status === 409) {
+            if (looksLikeEntity(e.serverState)) setMilestone(e.serverState as unknown as Milestone);
+            toast("Someone else updated this milestone first — refreshed to the latest version.", "warning");
+            return { ok: false, code: e.code };
+          }
+          toast(e.message || `Milestone change rejected (${e.code}).`, "error");
+          return { ok: false, code: e.code };
+        }
+        toast("Network error — milestone not updated.", "error");
+        return { ok: false, code: "NETWORK" };
+      }
+    },
+    [guardWrite, toast, setMilestone, refresh],
+  );
+
   // ---- boot & connectivity --------------------------------------------------
 
   /**
@@ -777,13 +895,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     (async () => {
       const online = typeof navigator !== "undefined" ? navigator.onLine : true;
-      const [users, projects, tasks, roadblocks, approvals, conflicts, queuedCount, cachedUser, refreshedAt] =
+      const [users, projects, tasks, roadblocks, approvals, milestones, conflicts, queuedCount, cachedUser, refreshedAt] =
         await Promise.all([
           idb.getAll<User>("users"),
           idb.getAll<Project>("projects"),
           idb.getAll<Task>("tasks"),
           idb.getAll<Roadblock>("roadblocks"),
           idb.getAll<SecurityApproval>("approvals"),
+          idb.getAll<Milestone>("milestones"),
           idb.getAll<ConflictEntry>("conflicts"),
           outboxCount(),
           idb.getMeta<User>("currentUser"),
@@ -801,6 +920,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         tasks,
         roadblocks,
         approvals,
+        milestones,
         conflicts,
         outboxCount: queuedCount,
         user,
@@ -888,6 +1008,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       decideApproval,
       resolveConflict,
       upsertProject,
+      createMilestone,
+      updateMilestone,
+      refresh,
       lockedReason,
       lockedMessage,
       openRoadblock,
@@ -907,6 +1030,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       decideApproval,
       resolveConflict,
       upsertProject,
+      createMilestone,
+      updateMilestone,
+      refresh,
       lockedReason,
       lockedMessage,
       openRoadblock,

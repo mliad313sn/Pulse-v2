@@ -8,4 +8,6 @@ export const TABLES = {
   portfolio: 'portfolios',
   program: 'programs',
   member: 'project_members',
+  milestone: 'milestones',
+  gateRequest: 'gate_requests',
 };

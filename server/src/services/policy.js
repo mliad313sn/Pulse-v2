@@ -174,6 +174,17 @@ export function canWriteTask(user, project, task, members = []) {
 }
 
 /**
+ * Milestone write (E08): manage-level authority OR the milestone's owner.
+ * Creates (`milestone` null) require manage-level authority — a contributor
+ * cannot mint a milestone and grant themselves write access by self-owning it.
+ */
+export function canWriteMilestone(user, project, milestone, members = []) {
+  if (!canWrite(user)) return false;
+  if (canManageProjectWork(user, project, members)) return true;
+  return milestone != null && milestone.ownerId === user.id;
+}
+
+/**
  * Roadblock write for non-managers. Creates (`roadblock` null) are open to any
  * writer who can read the project — they become the reporter (field logging).
  */

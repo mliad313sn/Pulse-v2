@@ -67,6 +67,15 @@ export type OperatingStatus =
   | "COMPLETED"
   | "CANCELLED";
 
+/** Derived, read-only rollup computed server-side from milestone weights. */
+export interface ProjectProgress {
+  /** null when the project has no active milestones. */
+  percent: number | null;
+  completedWeight: number;
+  activeWeight: number;
+  explanation: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -92,6 +101,18 @@ export interface Project {
   operatingStatus?: OperatingStatus;
   engagedDivisions?: string[];
   sites?: string[];
+  // ---- Wave 2 governance fields ----
+  startDate?: string | null;
+  targetDate?: string | null;
+  actualEndDate?: string | null;
+  acceptanceCriteria?: string | null;
+  deploymentPlan?: string | null;
+  supportOwnerId?: string | null;
+  closureSummary?: string | null;
+  cancelReason?: string | null;
+  holdReason?: string | null;
+  /** Derived server-side from milestones — never editable client-side. */
+  progress?: ProjectProgress;
   version: number;
   updatedAt: string;
   createdAt?: string;
@@ -217,12 +238,101 @@ export interface SecurityApproval {
   notes?: string | null;
 }
 
+// ---- Milestones (Wave 2 governance) ----------------------------------------
+
+export type MilestoneType =
+  | "STANDARD"
+  | "SECURITY_GATE"
+  | "SITE_READINESS"
+  | "UAT"
+  | "GO_LIVE"
+  | "GOVERNANCE_GATE"
+  | "OPERATIONAL_HANDOVER";
+
+export type MilestoneStatus =
+  | "NOT_STARTED"
+  | "IN_PROGRESS"
+  | "DONE"
+  | "SLIPPED"
+  | "CANCELLED";
+
+export interface Milestone {
+  id: string;
+  projectId: string;
+  title: string;
+  description?: string | null;
+  type: MilestoneType;
+  status: MilestoneStatus;
+  ownerId?: string | null;
+  baselineDue?: string | null;
+  forecastDue?: string | null;
+  actualCompleted?: string | null;
+  weight: number;
+  version: number;
+  updatedAt: string;
+  createdAt?: string;
+}
+
+// ---- Stage gates (Wave 2 governance) ----------------------------------------
+
+export type GateId = "G0" | "G1" | "G2" | "G3" | "G4" | "G5";
+
+export interface GateRequirement {
+  key: string;
+  label: string;
+  satisfied: boolean;
+  detail?: string | null;
+}
+
+export type GateDecision = "APPROVED" | "REJECTED";
+
+/** A pending (or decided) request to pass a stage gate. Shape kept tolerant. */
+export interface GateRequest {
+  id: string;
+  projectId?: string;
+  gate?: GateId | null;
+  fromStage?: LifecycleStage;
+  toStage?: LifecycleStage;
+  status?: string;
+  note?: string | null;
+  dispositionNote?: string | null;
+  requestedBy?: string | null;
+  requestedAt?: string | null;
+  [key: string]: unknown;
+}
+
+/** GET /api/projects/:id/gates */
+export interface GateStatus {
+  stage: LifecycleStage;
+  nextStage: LifecycleStage | null;
+  gate: GateId | null;
+  requirements: GateRequirement[];
+  steeringRequired: boolean;
+  pendingRequest?: GateRequest | null;
+}
+
+/** GET /api/projects/:id/ledger — immutable approval record. */
+export interface LedgerEntry {
+  id: string;
+  gate: GateId | null;
+  fromStage: LifecycleStage;
+  toStage: LifecycleStage;
+  decision: GateDecision;
+  decidedBy?: string | null;
+  decidedAt?: string | null;
+  requestedBy?: string | null;
+  requestedAt?: string | null;
+  authorityType?: string | null;
+  note?: string | null;
+}
+
 export interface Bootstrap {
   user: User;
   projects: Project[];
   tasks: Task[];
   roadblocks: Roadblock[];
   approvals: SecurityApproval[];
+  milestones?: Milestone[];
   serverTime: string;
 }
 

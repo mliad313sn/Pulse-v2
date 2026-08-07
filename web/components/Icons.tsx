@@ -201,6 +201,26 @@ export function CogIcon({ className }: IconProps) {
   );
 }
 
+export function FlagIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="M5.5 21V4" />
+      <path d="M5.5 4.5c2.2-1.4 4.4-1.4 6.5 0s4.3 1.4 6.5 0V13c-2.2 1.4-4.4 1.4-6.5 0s-4.3-1.4-6.5 0" />
+    </svg>
+  );
+}
+
+export function ScaleIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="M12 3.5v17M8 20.5h8" />
+      <path d="M12 5.5L5.5 7.5M12 5.5l6.5 2" />
+      <path d="M3 13.5l2.5-6 2.5 6a2.6 2.6 0 0 1-5 0z" />
+      <path d="M16 13.5l2.5-6 2.5 6a2.6 2.6 0 0 1-5 0z" />
+    </svg>
+  );
+}
+
 export function MergeIcon({ className }: IconProps) {
   return (
     <svg {...base(className)}>

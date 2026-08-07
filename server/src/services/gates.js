@@ -2,26 +2,32 @@
  * Governance gates (contract invariants 2-3), mirrored from the DB triggers
  * so they also apply against the in-memory repository.
  */
-import { dependencyLocked, invalidLifecycleTransition, securityGate } from '../errors.js';
+import { dependencyLocked, securityGate, validation } from '../errors.js';
 
 const ADVANCING_STATUSES = ['in_progress', 'done'];
 
-/**
- * E04 lifecycle stages, in canonical order. For THIS slice the stage is data +
- * validation only: a PATCH may move exactly ONE stage forward or backward —
- * no skipping. The real G0-G5 gate engine (entry criteria, approvals, Steering
- * privilege) lands in E05 and will replace/extend this guard.
- */
+/** Lifecycle stages, in canonical order (plan §12.1 — no skips). */
 export const LIFECYCLE_STAGES = [
   'IDEA', 'INITIATION', 'PLANNING', 'EXECUTION', 'DEPLOYMENT', 'RUN', 'CLOSED',
 ];
 
-/** Throws 400 INVALID_LIFECYCLE_TRANSITION on any multi-step stage move. */
-export function assertLifecycleStep(from, to) {
+/**
+ * E05: direct writes of lifecycleStage are FORBIDDEN — forward movement goes
+ * through the gate process (POST /api/projects/:id/gates/request + approval).
+ * The single exception is a controlled correction: ADMIN may step exactly ONE
+ * stage backward (audited as LIFECYCLE_CORRECTION by the caller).
+ * Out-of-enum values are caught earlier by assertEnums (plain 400 VALIDATION).
+ */
+export function assertLifecycleChange(actor, from, to) {
   const i = LIFECYCLE_STAGES.indexOf(from);
   const j = LIFECYCLE_STAGES.indexOf(to);
-  if (i === -1 || j === -1) return; // out-of-enum values are caught by assertEnums (400 VALIDATION)
-  if (Math.abs(j - i) !== 1) throw invalidLifecycleTransition(from, to);
+  if (i === -1 || j === -1) return;
+  if (j - i === -1 && actor?.baseRole === 'ADMIN') return; // ADMIN one-step-backward correction
+  throw validation(
+    `lifecycleStage cannot be set directly — use the gate process (${from} -> ${to}); `
+      + 'only ADMIN may move one stage backward as a controlled correction',
+    { from, to },
+  );
 }
 
 function lookupTask(tasksById, id) {

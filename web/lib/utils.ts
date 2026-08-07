@@ -1,9 +1,13 @@
 import type {
   Division,
   LifecycleStage,
+  Milestone,
+  MilestoneStatus,
+  MilestoneType,
   OperatingStatus,
   Project,
   ProjectMember,
+  ProjectProgress,
   ProjectRole,
   ProjectStatus,
   RoadblockSeverity,
@@ -184,6 +188,123 @@ export const OPERATING_STATUS_META: Record<OperatingStatus, { label: string; bad
     badge: "bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300",
   },
 };
+
+/** Mirrors the server rule: only the steering privilege may decide steering gates. */
+export function hasSteering(user: Pick<User, "privileges"> | null | undefined): boolean {
+  return (user?.privileges ?? []).includes("steering");
+}
+
+// ---- Milestones (Wave 2 governance) -----------------------------------------
+
+export const MILESTONE_TYPES: MilestoneType[] = [
+  "STANDARD",
+  "SECURITY_GATE",
+  "SITE_READINESS",
+  "UAT",
+  "GO_LIVE",
+  "GOVERNANCE_GATE",
+  "OPERATIONAL_HANDOVER",
+];
+
+export const MILESTONE_TYPE_META: Record<MilestoneType, { label: string; badge: string }> = {
+  STANDARD: {
+    label: "Standard",
+    badge: "bg-slate-100 text-slate-600 dark:bg-slate-700/60 dark:text-slate-300",
+  },
+  SECURITY_GATE: {
+    label: "Security Gate",
+    badge: "bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300",
+  },
+  SITE_READINESS: {
+    label: "Site Readiness",
+    badge: "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300",
+  },
+  UAT: {
+    label: "UAT",
+    badge: "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300",
+  },
+  GO_LIVE: {
+    label: "Go-Live",
+    badge: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300",
+  },
+  GOVERNANCE_GATE: {
+    label: "Governance Gate",
+    badge: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300",
+  },
+  OPERATIONAL_HANDOVER: {
+    label: "Ops Handover",
+    badge: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300",
+  },
+};
+
+export const MILESTONE_STATUS_META: Record<MilestoneStatus, { label: string; badge: string; dot: string }> = {
+  NOT_STARTED: {
+    label: "Not started",
+    badge: "bg-slate-100 text-slate-600 dark:bg-slate-700/60 dark:text-slate-300",
+    dot: "bg-slate-400",
+  },
+  IN_PROGRESS: {
+    label: "In progress",
+    badge: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
+    dot: "bg-blue-500",
+  },
+  DONE: {
+    label: "Done",
+    badge: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300",
+    dot: "bg-emerald-500",
+  },
+  SLIPPED: {
+    label: "Slipped",
+    badge: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300",
+    dot: "bg-amber-500",
+  },
+  CANCELLED: {
+    label: "Cancelled",
+    badge: "bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300",
+    dot: "bg-rose-500",
+  },
+};
+
+/** Quick-advance transitions for the milestone list (server enforces rules). */
+export const MILESTONE_NEXT: Partial<Record<MilestoneStatus, { label: string; next: MilestoneStatus }>> = {
+  NOT_STARTED: { label: "Start", next: "IN_PROGRESS" },
+  IN_PROGRESS: { label: "Mark done", next: "DONE" },
+  SLIPPED: { label: "Mark done", next: "DONE" },
+};
+
+/** Slipped = flagged by status, or forecast now later than the baseline commitment. */
+export function isMilestoneSlipped(
+  m: Pick<Milestone, "status" | "baselineDue" | "forecastDue">,
+): boolean {
+  if (m.status === "SLIPPED") return true;
+  if (m.status === "DONE" || m.status === "CANCELLED") return false;
+  if (!m.baselineDue || !m.forecastDue) return false;
+  const base = Date.parse(m.baselineDue);
+  const forecast = Date.parse(m.forecastDue);
+  return !Number.isNaN(base) && !Number.isNaN(forecast) && forecast > base;
+}
+
+/**
+ * Client fallback for stale caches missing the server-derived `progress`.
+ * Mirrors the server formula: completedWeight / activeWeight (CANCELLED excluded).
+ */
+export function computeProgress(milestones: Milestone[]): ProjectProgress {
+  const active = milestones.filter((m) => m.status !== "CANCELLED");
+  const activeWeight = active.reduce((sum, m) => sum + (m.weight || 0), 0);
+  const completedWeight = active
+    .filter((m) => m.status === "DONE")
+    .reduce((sum, m) => sum + (m.weight || 0), 0);
+  if (active.length === 0 || activeWeight <= 0) {
+    return { percent: null, completedWeight: 0, activeWeight: 0, explanation: "No milestones yet" };
+  }
+  const percent = Math.round((completedWeight / activeWeight) * 100);
+  return {
+    percent,
+    completedWeight,
+    activeWeight,
+    explanation: `${completedWeight} of ${activeWeight} weight completed across ${active.length} milestone${active.length === 1 ? "" : "s"}`,
+  };
+}
 
 /** Project member roles in display order (PM/SPONSOR first). */
 export const PROJECT_ROLES: ProjectRole[] = [
