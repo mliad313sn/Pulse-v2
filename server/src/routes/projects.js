@@ -1,29 +1,41 @@
 import { Router } from 'express';
 import { asyncHandler } from './middleware.js';
 import {
-  loadProjectAccess, mountEntityCrud, withLocked, withPmAll, withPmOne,
+  loadProjectAccess, mountEntityCrud, newestFirst, withLocked, withPmAll, withPmOne,
+  withRagAll, withRagOne,
 } from './helpers.js';
 import {
   LEAD_ROLES, PROJECT_ROLES, assertCan, assertReadProject, canManageProjectWork,
   filterReadableProjects,
 } from '../services/policy.js';
+import { RAG_COLORS } from '../services/rag.js';
 import {
   evaluateGate, gateForStage, loadGateContext, nextStage,
 } from '../services/gateEngine.js';
 import { gateRequestWire } from './gates.js';
 import { dependencyWire } from './dependencies.js';
 import { computeSchedule } from '../services/schedule.js';
-import { forbidden, gateRequestPending, gateRequirementsNotMet, notFound, validation } from '../errors.js';
+import {
+  forbidden, gateRequestPending, gateRequirementsNotMet, notFound,
+  ragOverrideReasonTooShort, validation,
+} from '../errors.js';
 import { nowIso } from '../services/time.js';
 import { randomUUID } from 'node:crypto';
 
 export function projectsRouter() {
   const router = Router();
 
+  /** Full project wire decoration: pmId + progress (E08) + rag (E10). */
+  async function decorateProject(repo, project) {
+    return withRagOne(repo, await withPmOne(repo, project));
+  }
+
   router.get('/', asyncHandler(async (req, res) => {
-    const { projects, membersByProject, milestonesByProject } = await loadProjectAccess(req.app.locals.repo);
-    const visible = filterReadableProjects(req.user, projects, membersByProject);
-    res.json(withPmAll(visible, membersByProject, milestonesByProject));
+    const repo = req.app.locals.repo;
+    const access = await loadProjectAccess(repo, { rag: true });
+    const visible = filterReadableProjects(req.user, access.projects, access.membersByProject);
+    res.json(await withRagAll(
+      repo, withPmAll(visible, access.membersByProject, access.milestonesByProject), access));
   }));
 
   router.get('/:id', asyncHandler(async (req, res) => {
@@ -33,7 +45,7 @@ export function projectsRouter() {
     const members = await repo.listProjectMembers(project.id);
     // ADR-005 concealment: unreadable -> same 404 as a missing id.
     assertReadProject(req.user, project, 'project', req.params.id, members);
-    res.json(await withPmOne(repo, project));
+    res.json(await decorateProject(repo, project));
   }));
 
   router.get('/:id/tasks', asyncHandler(async (req, res) => {
@@ -92,6 +104,109 @@ export function projectsRouter() {
       repo.list('dependency', { projectId: project.id }),
     ]);
     res.json(computeSchedule(tasks, dependencies));
+  }));
+
+  // ---- project updates (E13 core) + RAG (E10) ------------------------------
+
+  /** GET /api/projects/:id/updates — newest first; any reader (concealed 404). */
+  router.get('/:id/updates', asyncHandler(async (req, res) => {
+    const repo = req.app.locals.repo;
+    const project = await loadReadableProject(repo, req.user, req.params.id);
+    res.json(newestFirst(await repo.list('projectUpdate', { projectId: project.id })));
+  }));
+
+  /** GET /api/projects/:id/rag-history — snapshots, newest first (plan §133). */
+  router.get('/:id/rag-history', asyncHandler(async (req, res) => {
+    const repo = req.app.locals.repo;
+    const project = await loadReadableProject(repo, req.user, req.params.id);
+    // Decoration lazily appends the snapshot on color change; run it here so
+    // the history always includes the CURRENT state before answering.
+    await withRagOne(repo, project);
+    res.json((await repo.listRagSnapshots({ projectId: project.id })).reverse());
+  }));
+
+  /** Loads project + members with concealment and demands manage-level authority. */
+  async function loadForRagOverride(repo, user, id) {
+    const project = await repo.get('project', id);
+    if (!project) throw notFound(`project ${id} not found`);
+    const members = await repo.listProjectMembers(project.id);
+    assertReadProject(user, project, 'project', id, members);
+    if (!canManageProjectWork(user, project, members)) {
+      throw forbidden('Managing the RAG override requires ADMIN, the project PM, or a DIVISION_LEAD of its division');
+    }
+    return project;
+  }
+
+  /**
+   * POST /api/projects/:id/rag-override {color, reason} — manual RAG override
+   * (plan §25). Manage-level only; reason must trim to >=30 chars
+   * (400 RAG_OVERRIDE_REASON_TOO_SHORT). Audited with the computed color at
+   * override time. Returns the decorated project (rag.manual set).
+   */
+  router.post('/:id/rag-override', asyncHandler(async (req, res) => {
+    const repo = req.app.locals.repo;
+    const project = await loadForRagOverride(repo, req.user, req.params.id);
+    const { color, reason } = req.body ?? {};
+    if (!RAG_COLORS.includes(color)) {
+      throw validation(`color must be one of ${RAG_COLORS.join(', ')}`, { field: 'color', allowed: RAG_COLORS });
+    }
+    if (typeof reason !== 'string' || reason.trim().length < 30) {
+      throw ragOverrideReasonTooShort();
+    }
+
+    // Compute the pre-override color for the permanent audit record (plan §25).
+    const before = await withRagOne(repo, project);
+    const override = { color, reason: reason.trim(), byId: req.user.id, at: nowIso() };
+    const updated = await repo.transaction(req.user.id, async (tx) => {
+      const written = await tx.update('project', {
+        ...project, ragOverride: override, version: project.version + 1, updatedAt: nowIso(),
+      });
+      await tx.appendAudit({
+        entityType: 'projects',
+        entityId: project.id,
+        action: 'RAG_OVERRIDE_SET',
+        actorId: req.user.id,
+        newData: {
+          color, reason: override.reason,
+          computedColorBefore: before.rag.computedColor, effectiveColorAfter: color,
+        },
+      });
+      return written;
+    });
+    res.json(await decorateProject(repo, updated));
+  }));
+
+  /**
+   * DELETE /api/projects/:id/rag-override — clears the override (manage-level,
+   * audited, idempotent). Returns the decorated project (rag.manual null).
+   */
+  router.delete('/:id/rag-override', asyncHandler(async (req, res) => {
+    const repo = req.app.locals.repo;
+    const project = await loadForRagOverride(repo, req.user, req.params.id);
+    if (project.ragOverride == null) {
+      res.json(await decorateProject(repo, project));
+      return;
+    }
+    const cleared = project.ragOverride;
+    // Clearing does not change the COMPUTED color — capture it up front.
+    const before = await withRagOne(repo, project);
+    const updated = await repo.transaction(req.user.id, async (tx) => {
+      const written = await tx.update('project', {
+        ...project, ragOverride: null, version: project.version + 1, updatedAt: nowIso(),
+      });
+      await tx.appendAudit({
+        entityType: 'projects',
+        entityId: project.id,
+        action: 'RAG_OVERRIDE_CLEARED',
+        actorId: req.user.id,
+        newData: {
+          cleared,
+          effectiveColorBefore: cleared.color, computedColorAfter: before.rag.computedColor,
+        },
+      });
+      return written;
+    });
+    res.json(await decorateProject(repo, updated));
   }));
 
   // ---- gate engine (E05) ---------------------------------------------------
@@ -264,7 +379,7 @@ export function projectsRouter() {
   mountEntityCrud(router, 'project', {
     canCreate: (user) => assertCan(user, 'project:create'),
     buildPayload: (req) => ({ ownerId: req.user.id, ...req.body }),
-    decorate: (repo, row) => withPmOne(repo, row),
+    decorate: (repo, row) => decorateProject(repo, row),
   });
 
   return router;

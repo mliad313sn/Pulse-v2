@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: OpsPM360 API
-  version: "1.3.0"
+  version: "1.4.0"
   description: |
     Offline-first project portfolio management for multi-site mining IT operations.
     Auth: server-side sessions — POST /auth/login sets the HttpOnly `ppm_session`
@@ -25,6 +25,11 @@ info:
     are scheduling-only), task scheduling fields (workstreamId,
     plannedStart/plannedFinish, estimatedHours) and the CPM schedule /
     critical-path endpoint.
+    E10/E13: computed RAG health on every project (four explained signals —
+    schedule, roadblocks, overdueWork, freshness — worst wins), manual RAG
+    override (manage-level, reason >=30 chars, audited, MANUAL badge),
+    change-based rag_snapshots trend history, and APPEND-ONLY project updates
+    (POST + GET only; the freshness source; online-only — not a sync entity).
 servers:
   - url: http://localhost:4000/api
 tags:
@@ -39,6 +44,8 @@ tags:
   - name: dependencies
   - name: gates
   - name: tasks
+  - name: updates
+  - name: health
   - name: roadblocks
   - name: approvals
   - name: sync
@@ -667,6 +674,10 @@ paths:
                   dependencies:
                     type: array
                     items: { $ref: "#/components/schemas/TaskDependency" }
+                  updates:
+                    type: array
+                    items: { $ref: "#/components/schemas/ProjectUpdate" }
+                    description: Capped at the latest 20 per project (newest first); full history via GET /projects/{id}/updates
                   pillars:
                     type: array
                     items: { $ref: "#/components/schemas/StrategicPillar" }
@@ -888,6 +899,108 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/LedgerEntry" }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/updates:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    get:
+      tags: [updates]
+      summary: Project updates, newest first (append-only history — E13)
+      responses:
+        "200":
+          description: Project updates
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ProjectUpdate" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/rag-history:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    get:
+      tags: [health]
+      summary: RAG trend snapshots, newest first (change-based, never fabricated — plan §133)
+      responses:
+        "200":
+          description: Snapshots
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RagSnapshot" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/rag-override:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    post:
+      tags: [health]
+      summary: Set the manual RAG override (manage-level; reason >= 30 chars; audited — plan §25)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [color, reason]
+              properties:
+                color: { type: string, enum: [GREEN, AMBER, RED] }
+                reason: { type: string, minLength: 30, description: Trimmed length must be >= 30 (else 400 RAG_OVERRIDE_REASON_TOO_SHORT) }
+      responses:
+        "200":
+          description: Decorated project — rag.color = override, rag.manual set, rag.computedColor kept
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [health]
+      summary: Clear the manual RAG override (manage-level; audited; idempotent)
+      responses:
+        "200":
+          description: Decorated project — rag.manual null, effective color = computed again
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /updates:
+    post:
+      tags: [updates]
+      summary: >
+        Post a project update (E13, plan §32) — APPEND-ONLY: no PATCH/DELETE
+        routes exist anywhere (revisions arrive in a later slice) and updates
+        are NOT part of the offline sync entity set (online-only). Writers:
+        manage-level, project owner/sponsor, or contributing member
+        (INFORMED/AUDITOR excluded); author is always the session user.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [projectId, mood, text]
+              properties:
+                projectId: { type: string, format: uuid }
+                mood: { type: string, enum: [POSITIVE, NEUTRAL, CONCERN, CRITICAL] }
+                text: { type: string, maxLength: 400 }
+                accomplishment: { type: string, nullable: true }
+                nextStep: { type: string, nullable: true }
+                supportRequired: { type: string, nullable: true }
+      responses:
+        "201":
+          description: Created (immutable from now on)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectUpdate" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /milestones:
     get:
@@ -1457,9 +1570,9 @@ components:
           type: string
           enum: [AUTH_REQUIRED, AUTH_FAILED, ACCOUNT_LOCKED, ACCOUNT_DISABLED, RATE_LIMITED,
                  PASSWORD_CHANGE_REQUIRED, NOT_CONFIGURED, FORBIDDEN, NOT_FOUND, VERSION_CONFLICT,
-                 DEPENDENCY_LOCKED, SECURITY_GATE, VALIDATION,
+                 DEPENDENCY_LOCKED, SECURITY_GATE, VALIDATION, DUPLICATE,
                  GATE_REQUIREMENTS_NOT_MET, STEERING_APPROVAL_REQUIRED, GATE_REQUEST_PENDING,
-                 INTERNAL]
+                 RAG_OVERRIDE_REASON_TOO_SHORT, INTERNAL]
         message: { type: string }
         detail:
           type: object
@@ -1549,8 +1662,79 @@ components:
           nullable: true
           description: Derived — the single PM member's userId, or null
         progress: { $ref: "#/components/schemas/Progress" }
+        rag: { $ref: "#/components/schemas/Rag" }
+        ragOverride:
+          type: object
+          nullable: true
+          description: >
+            Server-managed manual override storage ({color, reason, byId, at})
+            — set/cleared ONLY via the rag-override endpoints, never PATCHable.
+            The decorated view lives in rag.manual.
         version: { type: integer }
         updatedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    Rag:
+      type: object
+      description: >
+        COMPUTED health (E10, plan §24-§26) — never writable. Worst active
+        signal wins; while a manual override is active, color = the override
+        color, manual is set (persistent MANUAL badge) and computedColor still
+        reports the engine's result.
+      properties:
+        color: { type: string, enum: [GREEN, AMBER, RED], description: Effective color (override wins) }
+        computedColor: { type: string, enum: [GREEN, AMBER, RED] }
+        manual:
+          type: object
+          nullable: true
+          properties:
+            color: { type: string, enum: [GREEN, AMBER, RED] }
+            reason: { type: string }
+            byId: { type: string, format: uuid }
+            at: { type: string, format: date-time }
+        signals:
+          type: array
+          description: Always the four core signals, in order — schedule, roadblocks, overdueWork, freshness
+          items: { $ref: "#/components/schemas/RagSignal" }
+        explanation: { type: string, description: Human sentence for the headline color (plan §117) }
+
+    RagSignal:
+      type: object
+      properties:
+        key: { type: string, enum: [schedule, roadblocks, overdueWork, freshness] }
+        label: { type: string }
+        color: { type: string, enum: [GREEN, AMBER, RED] }
+        explanation: { type: string }
+
+    RagSnapshot:
+      type: object
+      description: >
+        RAG trend history (plan §133) — appended lazily at read time whenever
+        the effective or computed color differs from the project's last
+        snapshot; append-only, never fabricated or backfilled.
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        color: { type: string, enum: [GREEN, AMBER, RED] }
+        computedColor: { type: string, enum: [GREEN, AMBER, RED] }
+        isManual: { type: boolean }
+        capturedAt: { type: string, format: date-time }
+
+    ProjectUpdate:
+      type: object
+      description: >
+        APPEND-ONLY fast status pulse (E13, plan §32) and the RAG freshness
+        source. No version/updatedAt — rows never change; no PATCH/DELETE
+        routes exist. Not part of the offline sync entity set.
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        authorId: { type: string, format: uuid, description: Always the session user }
+        mood: { type: string, enum: [POSITIVE, NEUTRAL, CONCERN, CRITICAL] }
+        text: { type: string, maxLength: 400 }
+        accomplishment: { type: string, nullable: true }
+        nextStep: { type: string, nullable: true }
+        supportRequired: { type: string, nullable: true }
         createdAt: { type: string, format: date-time }
 
     Progress:

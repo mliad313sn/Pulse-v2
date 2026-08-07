@@ -1,6 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { asyncHandler } from './middleware.js';
 import { computeLocked } from '../services/gates.js';
 import { computeProgress } from '../services/progress.js';
+import { computeRag } from '../services/rag.js';
 import { createEntity, patchEntity } from '../services/entityOps.js';
 
 /** Groups membership rows by projectId (Map projectId -> rows). */
@@ -24,18 +26,97 @@ export function groupByProject(rows) {
  * the project list, membership rows grouped by project (classification is
  * membership-based and enterprise access needs member/owner/sponsor checks —
  * E04/E01), and milestones grouped by project (derived `progress` — E08).
+ *
+ * `{ rag: true }` additionally loads the RAG inputs (tasks, roadblocks,
+ * project updates) grouped per project — everything computeRag needs, in ONE
+ * pass per request (no N+1). Routes that only filter by readability keep the
+ * cheap 3-list load.
  */
-export async function loadProjectAccess(repo) {
-  const [projects, members, milestones] = await Promise.all([
+export async function loadProjectAccess(repo, { rag = false } = {}) {
+  const [projects, members, milestones, tasks, roadblocks, updates] = await Promise.all([
     repo.list('project'),
     repo.listProjectMembers(),
     repo.list('milestone'),
+    ...(rag ? [repo.list('task'), repo.list('roadblock'), repo.list('projectUpdate')] : []),
   ]);
-  return {
+  const access = {
     projects,
     membersByProject: groupMembers(members),
     milestonesByProject: groupByProject(milestones),
   };
+  if (rag) {
+    access.tasks = tasks;
+    access.roadblocks = roadblocks;
+    access.updates = updates;
+    access.tasksByProject = groupByProject(tasks);
+    access.roadblocksByProject = groupByProject(roadblocks);
+    access.updatesByProject = groupByProject(updates);
+  }
+  return access;
+}
+
+/** Newest-first copy by createdAt; ties keep the later-inserted row first. */
+export function newestFirst(rows) {
+  return [...rows]
+    .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0))
+    .reverse();
+}
+
+/**
+ * E10 RAG trend (plan §133): lazily append a snapshot when the effective or
+ * computed color differs from the project's LAST snapshot. Running at read
+ * time (decoration) guarantees a snapshot exists before anyone sees a new
+ * color, for both repos, without hooking every write path. History is never
+ * backfilled — the first snapshot is simply the first observed state.
+ */
+export async function ensureRagSnapshot(repo, projectId, rag, last) {
+  if (last && last.color === rag.color && last.computedColor === rag.computedColor) return;
+  await repo.appendRagSnapshot({
+    id: randomUUID(),
+    projectId,
+    color: rag.color,
+    computedColor: rag.computedColor,
+    isManual: rag.manual != null,
+    capturedAt: new Date().toISOString(),
+  });
+}
+
+/**
+ * Decorates wire projects with the derived `rag` block (E10). Requires the
+ * grouped maps from loadProjectAccess(repo, {rag: true}) — everything is
+ * O(one pass): the per-project maps and the snapshot list are built once.
+ */
+export async function withRagAll(repo, projects, access, now = new Date()) {
+  const lastSnapshotByProject = new Map();
+  for (const s of await repo.listRagSnapshots()) lastSnapshotByProject.set(s.projectId, s);
+  const out = [];
+  for (const p of projects) {
+    const rag = computeRag({
+      project: p,
+      milestones: access.milestonesByProject.get(p.id) ?? [],
+      roadblocks: access.roadblocksByProject.get(p.id) ?? [],
+      tasks: access.tasksByProject.get(p.id) ?? [],
+      updates: access.updatesByProject.get(p.id) ?? [],
+      now,
+    });
+    await ensureRagSnapshot(repo, p.id, rag, lastSnapshotByProject.get(p.id));
+    out.push({ ...p, rag });
+  }
+  return out;
+}
+
+/** Single-project variant of withRagAll, fetching only that project's inputs. */
+export async function withRagOne(repo, project, now = new Date()) {
+  const [milestones, roadblocks, tasks, updates, snapshots] = await Promise.all([
+    repo.list('milestone', { projectId: project.id }),
+    repo.list('roadblock', { projectId: project.id }),
+    repo.list('task', { projectId: project.id }),
+    repo.list('projectUpdate', { projectId: project.id }),
+    repo.listRagSnapshots({ projectId: project.id }),
+  ]);
+  const rag = computeRag({ project, milestones, roadblocks, tasks, updates, now });
+  await ensureRagSnapshot(repo, project.id, rag, snapshots[snapshots.length - 1]);
+  return { ...project, rag };
 }
 
 /**

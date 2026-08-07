@@ -73,14 +73,18 @@ scheduling-only and never lock); services/schedule.js pure CPM forward/backward 
 (documented duration/anchor/lag rules) + GET /api/projects/:id/schedule -> {tasks[],
 criticalPath[]}; generic repo.delete added to both repos (audited).
 
+## Completed slice 5: E07 web Gantt + E10 RAG engine + E13 updates core — DONE
+Verified: 216/216 server tests (52 suites) · scratch-Postgres (append-only update trigger,
+JSONB override, snapshots) · typed web build · live browser cycles (Gantt renders grouping/
+critical path; update composer posts; RAG explain dialog; override w/ 30-char reason -> MANUAL
+badge -> clear; wrong-persona writes correctly 403'd). Contract v6, OpenAPI 1.4.0, ADR-006.
+
 ## Next slices (in order)
-1. E07 web: Gantt read view (parallel frontend agent; server contract v5 is frozen).
-2. E10: computed RAG (4 signals, worst-wins, explanation) + freshness + manual override w/ reason.
-3. E25/E26 rework per ADR-003: strict conflicts (drop LWW), ordered halt-on-refusal offline queue.
-4. E09 Actions + E11 roadblock lifecycle upgrade (RAISED→…→VERIFIED) + risks + CAPA.
-5. E22 My Work + Portfolio Wall KPI banner (drill-down).
-4. E26/E25 rework: strict conflict (drop LWW for core objects), ordered halt-on-refusal offline queue.
-5. E07/E08: workstreams, typed dependencies, milestones, weighted progress.
+1. E25/E26 rework per ADR-003: strict conflicts (drop LWW), ordered halt-on-refusal offline
+   queue with human retry/discard, admin notification of halted sync.
+2. E09 Actions + E11 roadblock lifecycle upgrade (RAISED→…→VERIFIED) + risks + CAPA.
+3. E22 My Work + Portfolio Wall KPI banner (drill-down) + Site Lens.
+4. E19 notifications hub (in-app first).
 
 ## Known plan-vs-v1 conflicts (must be reworked, recorded in DECISIONS.md)
 - v1 LWW auto-merge violates §58/§57 (no silent/auto conflict resolution for core objects).

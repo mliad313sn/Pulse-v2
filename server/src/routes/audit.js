@@ -10,7 +10,9 @@ function auditProjectId(entry) {
   return data.projectId ?? data.project_id ?? null;
 }
 
-const PROJECT_SCOPED_TYPES = new Set(['tasks', 'roadblocks', 'security_approvals', 'project_members']);
+const PROJECT_SCOPED_TYPES = new Set([
+  'tasks', 'roadblocks', 'security_approvals', 'project_members', 'project_updates',
+]);
 
 /** GET /api/audit?entityId= — read-only audit trail. */
 export function auditRouter() {

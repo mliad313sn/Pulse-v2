@@ -1,4 +1,4 @@
-# OpsPM360 — API Contract (v5 — workstreams, typed task dependencies, critical path)
+# OpsPM360 — API Contract (v6 — computed RAG health + manual override, project updates)
 
 Shared contract between `server/` (Node.js/Express) and `web/` (Next.js PWA).
 Both sides MUST conform to this document. Base URL: `http://localhost:4000/api`.
@@ -318,6 +318,103 @@ explanation: "No milestones yet"}`; all cancelled → percent null. Attempts to
 write `progress` are silently ignored (not a writable field). Appears on every
 project read (list, detail, bootstrap, deck data).
 
+## Project updates (E13 core, plan §32 — APPEND-ONLY)
+
+`ProjectUpdate`: **{id, projectId, authorId, mood
+(`POSITIVE|NEUTRAL|CONCERN|CRITICAL`), text (required, ≤400 chars),
+accomplishment?, nextStep?, supportRequired?, createdAt}**. No `version` /
+`updatedAt` — rows never change.
+
+- **APPEND-ONLY**: only POST + GET exist. There is NO PATCH and NO DELETE
+  route anywhere (plan §32 makes edits *revisions*, which arrive with the full
+  E13 slice; until then updates are immutable —
+  `trg_project_updates_append_only` is the DB backstop). Every POST is audited.
+- `authorId` is ALWAYS the session user — no posting on someone's behalf.
+- **Writers**: manage-level authority (ADMIN/PM/division lead), the project
+  **owner/sponsor**, or any **contributing member** (any project role except
+  `INFORMED`/`AUDITOR`). VIEWER and uninvolved users → `403 FORBIDDEN`.
+- **ONLINE-ONLY**: `projectUpdate` is deliberately NOT in the offline sync
+  entity set (a status pulse is only meaningful fresh; append-only rows have
+  no OCC version). A sync op with `entity: "projectUpdate"` is `rejected`.
+
+| Endpoint | Behavior |
+|---|---|
+| `GET /api/projects/:id/updates` | full history, **newest first** — any reader (concealed → 404) |
+| `POST /api/updates` `{projectId, mood, text, accomplishment?, nextStep?, supportRequired?}` | `201 ProjectUpdate`; missing/bad mood, missing/blank text, text >400 chars, non-string optional field → `400 VALIDATION`; concealed/unknown projectId → `400` "Unknown projectId" |
+
+Bootstrap: `GET /api/bootstrap` gains **`updates`** — capped at the **latest
+20 per project** (newest first); the full history stays behind
+`GET /api/projects/:id/updates`.
+
+## Computed RAG health (E10, plan §24-§26 — ADR-006)
+
+Every project wire object (list, detail, POST/PATCH responses, bootstrap,
+deck data) carries a derived, **never-writable** `rag` block:
+
+```json
+"rag": {
+  "color": "AMBER",            // effective color (override wins while active)
+  "computedColor": "AMBER",    // what the engine derived (always present)
+  "manual": null,              // or {color, reason, byId, at} while overridden
+  "signals": [ { "key": "schedule",   "label": "Schedule",     "color": "GREEN", "explanation": "..." },
+               { "key": "roadblocks", "label": "Roadblocks",   "color": "AMBER", "explanation": "1 high-severity roadblock open" },
+               { "key": "overdueWork","label": "Overdue work", "color": "GREEN", "explanation": "..." },
+               { "key": "freshness",  "label": "Freshness",    "color": "GREEN", "explanation": "Latest project update is 1 day old" } ],
+  "explanation": "AMBER — 1 high-severity roadblock open"
+}
+```
+
+Signals (worst active signal wins; each explanation is a human sentence,
+plan §117):
+1. **schedule** — active milestones (not DONE/CANCELLED) that are `SLIPPED`
+   or overdue (`forecastDue ?? baselineDue` < today, UTC): none → GREEN;
+   ≤20% of active → AMBER; >20% → RED.
+2. **roadblocks** — any open (status ≠ `resolved`) severity `critical` → RED;
+   else any open `high` → AMBER; else GREEN (ADR-006 severity mapping).
+3. **overdueWork** — open (not done) tasks with `plannedFinish` < today:
+   0 → GREEN, 1–3 → AMBER, ≥4 → RED (stands in for E09 actions, ADR-006).
+4. **freshness** — latest ProjectUpdate age ≤21d → GREEN; >21d → AMBER; RED
+   when ADDITIONALLY no meaningful activity (latest update / task / milestone
+   / roadblock `updatedAt`; project createdAt as last resort) for >30d.
+   EXEMPT (GREEN, explanation exactly `"freshness not tracked in this
+   state"`): operatingStatus `ON_HOLD|COMPLETED|CANCELLED` or lifecycleStage
+   `RUN|CLOSED`. Projects <21 days old without updates → GREEN, explanation
+   exactly `"recently created"`.
+
+Top-level `explanation`: `"All health signals are green"` when GREEN,
+otherwise `"<COLOR> — <worst signal explanation>"`; while overridden,
+`"Manually set to <COLOR> (computed <COLOR>): <reason>"`.
+
+### Manual RAG override (plan §25)
+
+| Endpoint | Behavior |
+|---|---|
+| `POST /api/projects/:id/rag-override` `{color: 'GREEN'\|'AMBER'\|'RED', reason}` | **manage-level only** (403 otherwise; concealed → 404); bad color → `400 VALIDATION`; `reason.trim().length < 30` → **`400 RAG_OVERRIDE_REASON_TOO_SHORT`**; `200` decorated project — `rag.color` = override, `rag.manual = {color, reason, byId, at}` (persistent MANUAL badge), `rag.computedColor` still reported. Audited (`RAG_OVERRIDE_SET` with reason + before/after color) on top of the project UPDATE row |
+| `DELETE /api/projects/:id/rag-override` | manage-level; idempotent; `200` decorated project (`rag.manual` null, effective = computed again); audited (`RAG_OVERRIDE_CLEARED`) |
+
+The override is stored server-side (`projects.rag_override` JSONB, wire field
+`ragOverride`) and is NOT writable via PATCH/sync (silently ignored, like
+`progress`). Setting/clearing bumps the project `version`.
+
+### RAG trend (plan §133)
+
+`RagSnapshot`: {id, projectId, color, computedColor, isManual, capturedAt}.
+A snapshot is appended **lazily at read time** (project decoration and
+rag-history reads) whenever the effective OR computed color differs from the
+project's last snapshot — for both repos, with no fabricated/backfilled
+history (the first snapshot is simply the first observed state; expect one
+initial row per project after its first decorated read). Snapshots are
+append-only, not audited (they ARE the record).
+
+| Endpoint | Behavior |
+|---|---|
+| `GET /api/projects/:id/rag-history` | snapshots **newest first** — any reader (concealed → 404); refreshes the current state before answering |
+
+Executive deck: per-project deck data gains `rag {color, computedColor,
+manual (bool), explanation}` — the slide's headline health marker (RAG color
++ MANUAL flag + why), with `overallStatus` kept alongside — and
+`latestUpdate {text, mood, authorId, createdAt} | null`.
+
 ## Error envelope
 ```json
 { "error": "CODE", "message": "human readable", "detail": { } }
@@ -340,6 +437,7 @@ project read (list, detail, bootstrap, deck data).
 | 422  | `GATE_REQUIREMENTS_NOT_MET` | gate request while requirements unmet (`detail.missing[]`) |
 | 403  | `STEERING_APPROVAL_REQUIRED` | G2 decision without the `steering` privilege (even ADMIN) |
 | 409  | `GATE_REQUEST_PENDING` | a gate request is already pending (`detail.pendingRequestId`) |
+| 400  | `RAG_OVERRIDE_REASON_TOO_SHORT` | manual RAG override with `reason.trim().length < 30` |
 | 400  | `VALIDATION`         | bad payload (incl. immutable `code`, VIEWER-as-PM, unknown refs, direct `lifecycleStage` writes, missing cancel/hold reason, cross-project workstream/dependency, self-dependency, dependency cycle) |
 
 ## Entities (JSON, camelCase over the wire)
@@ -357,7 +455,11 @@ securityGateStatus (`not_required|pending|approved|rejected`), ownerId,
 writable per manage-level policy; unknown supportOwnerId → 400),
 **pmId** (derived — the single PM member's userId, or null),
 **progress** (derived — see Computed progress; never writable),
+**rag** (derived — see Computed RAG health; never writable),
+**ragOverride** (server-managed via the rag-override endpoints; not PATCHable),
 version, updatedAt, createdAt.
+
+`ProjectUpdate`: see Project updates (E13 — append-only, online-only).
 
 `Task`: id, projectId, **workstreamId?** (same-project workstream — 400
 otherwise), title, description, division, site, assigneeId,
@@ -379,7 +481,7 @@ version, updatedAt, createdAt.
 ## Endpoints (business — all require a session; classification filter applies to every read)
 | Method & path | Notes |
 |---|---|
-| `GET /api/bootstrap` | `{ user, projects, tasks, roadblocks, approvals, milestones, workstreams, dependencies, pillars, portfolios, programs, serverTime }` — everything the client caches into IndexedDB (concealed projects and their children excluded; projects carry `pmId` + `progress`) |
+| `GET /api/bootstrap` | `{ user, projects, tasks, roadblocks, approvals, milestones, workstreams, dependencies, updates, pillars, portfolios, programs, serverTime }` — everything the client caches into IndexedDB (concealed projects and their children excluded; projects carry `pmId` + `progress` + `rag`; `updates` capped at the latest 20 per project) |
 | `GET /api/projects` / `GET /api/projects/:id` | classification + enterprise-access filtered; concealed → uniform 404; projects carry derived `pmId` |
 | `POST /api/projects` | create (ADMIN or DIVISION_LEAD); body = Project fields minus server-managed (`code` is generated); non-ADMIN classification forced `internal`; unknown portfolioId/programId/sponsorId/engagedDivisions/sites → 400 |
 | `PATCH /api/projects/:id` | body must include `version` (the base version); OCC applies; requires manage-level authority (ADMIN/PM/division lead — else 403); classification change ADMIN-only (403); `code` immutable (400); lifecycleStage gate-governed (400 VALIDATION except ADMIN one-step-backward); operatingStatus transition rules (see Project codes & lifecycle) |
@@ -391,6 +493,8 @@ version, updatedAt, createdAt.
 | `GET /api/projects/:id/schedule` | see Schedule / critical path (E07) |
 | `GET /api/projects/:id/gates` · `POST /api/projects/:id/gates/request` · `GET /api/gate-requests` · `POST /api/gate-requests/:id/decision` | see Gate engine (E05) |
 | `GET /api/projects/:id/ledger` | see Approval ledger (immutable, read-only) |
+| `GET /api/projects/:id/updates` · `POST /api/updates` | see Project updates (E13 — append-only) |
+| `POST /api/projects/:id/rag-override` · `DELETE /api/projects/:id/rag-override` · `GET /api/projects/:id/rag-history` | see Computed RAG health (E10) |
 | `POST /api/tasks` | create — manage-level, contributing member, or project owner/sponsor (else 403; VIEWER always 403) |
 | `PATCH /api/tasks/:id` | body must include `version`; E04 write policy (403) + OCC + gate checks (409/423) |
 | `GET /api/roadblocks` · `POST /api/roadblocks` | POST body: projectId, taskId?, description, severity? — any writer who can read the project (becomes reporter) |
@@ -466,3 +570,6 @@ Response:
 12. `operatingStatus` CANCELLED is terminal and requires `cancelReason`; ON_HOLD requires `holdReason`.
 13. Project `progress` is computed from milestone weights — no write path exists.
 14. The per-project task dependency graph is **acyclic** across all edge types (service DFS + recursive DB trigger); a task's `workstreamId` always references a workstream of its own project (service check + DB trigger).
+15. Project `rag` is computed (worst active signal wins, every signal explained); the ONLY stored health inputs are the domain rows themselves plus the manual override — which demands a ≥30-char reason, a manage-level actor, and permanent audit of reason + before/after color.
+16. Project updates are **append-only** (no PATCH/DELETE routes; DB trigger backstop) and always attributed to the session user.
+17. `rag_snapshots` history is change-based and never fabricated/backfilled.

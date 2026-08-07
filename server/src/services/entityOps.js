@@ -76,6 +76,9 @@ export const ENTITY_DEFS = {
       closureSummary: null,
       cancelReason: null,
       holdReason: null,
+      // E10: manual RAG override — server-managed via the rag-override
+      // endpoints only; deliberately NOT in `writable` (PATCH/sync ignore it).
+      ragOverride: null,
     }),
     enums: {
       cgeitTag: ['strategic_alignment', 'value_delivery', 'risk_optimization', 'resource_optimization', 'performance_measurement'],

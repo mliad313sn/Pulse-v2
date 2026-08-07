@@ -21,6 +21,7 @@ import { workstreamsRouter } from './routes/workstreams.js';
 import { dependenciesRouter } from './routes/dependencies.js';
 import { gateRequestsRouter } from './routes/gates.js';
 import { tasksRouter } from './routes/tasks.js';
+import { updatesRouter } from './routes/updates.js';
 import { roadblocksRouter } from './routes/roadblocks.js';
 import { approvalsRouter } from './routes/approvals.js';
 import { auditRouter } from './routes/audit.js';
@@ -73,6 +74,7 @@ export function createApp({ repo, authProvider = createEntraProvider() }) {
   app.use('/api/dependencies', dependenciesRouter()); // E07 typed dependencies
   app.use('/api/gate-requests', gateRequestsRouter()); // E05 gate decisions
   app.use('/api/tasks', tasksRouter());
+  app.use('/api/updates', updatesRouter()); // E13 core (append-only: POST only)
   app.use('/api/roadblocks', roadblocksRouter());
   app.use('/api/approvals', approvalsRouter());
   app.use('/api/audit', auditRouter());

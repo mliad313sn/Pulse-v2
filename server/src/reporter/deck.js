@@ -9,7 +9,7 @@ import PDFDocument from 'pdfkit';
 import { computeLocked } from '../services/gates.js';
 import { computeProgress } from '../services/progress.js';
 import { filterReadableProjects } from '../services/policy.js';
-import { groupMembers } from '../routes/helpers.js';
+import { groupMembers, newestFirst, withRagAll } from '../routes/helpers.js';
 
 const ACTIVE_STATUSES = ['active', 'at_risk', 'on_hold'];
 const SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -58,21 +58,27 @@ function nextMilestone(milestones) {
  * roadblocks, because everything below is grouped under the project.
  */
 export async function buildDeckData(repo, forUser) {
-  const [allDivisions, allProjects, allMembers, tasks, roadblocks, milestones] = await Promise.all([
+  const [allDivisions, allProjects, allMembers, tasks, roadblocks, milestones, updates] = await Promise.all([
     repo.listDivisions(),
     repo.list('project'),
     repo.listProjectMembers(),
     repo.list('task'),
     repo.list('roadblock'),
     repo.list('milestone'),
+    repo.list('projectUpdate'),
   ]);
   // Membership-based classification + enterprise access (E04/E01).
   const membersByProject = groupMembers(allMembers);
-  const projects = filterReadableProjects(forUser, allProjects, membersByProject);
+  const readable = filterReadableProjects(forUser, allProjects, membersByProject);
   const tasksById = new Map(tasks.map((t) => [t.id, t]));
   const tasksByProject = groupByProject(tasks);
   const roadblocksByProject = groupByProject(roadblocks);
   const milestonesByProject = groupByProject(milestones);
+  const updatesByProject = groupByProject(updates);
+  // E10: derived health per project (worst signal wins + explanation).
+  const projects = await withRagAll(repo, readable, {
+    milestonesByProject, tasksByProject, roadblocksByProject, updatesByProject,
+  });
 
   const divisions = [];
   for (const div of allDivisions) {
@@ -100,11 +106,24 @@ export async function buildDeckData(repo, forUser) {
             locked: computeLocked(t, tasksById, p),
           }));
         const projectMilestones = milestonesByProject.get(p.id) ?? [];
+        const latest = newestFirst(updatesByProject.get(p.id) ?? [])[0] ?? null;
         return {
           id: p.id,
           name: p.name,
           site: p.site,
           overallStatus: p.overallStatus,
+          // E10: computed RAG replaces overallStatus as the headline health
+          // marker on slides (overallStatus is kept alongside).
+          rag: {
+            color: p.rag.color,
+            computedColor: p.rag.computedColor,
+            manual: p.rag.manual != null,
+            explanation: p.rag.explanation,
+          },
+          // E13: the freshest status pulse for the exec narrative.
+          latestUpdate: latest
+            ? { text: latest.text, mood: latest.mood, authorId: latest.authorId, createdAt: latest.createdAt }
+            : null,
           securityGateStatus: p.securityGateStatus,
           // E08: computed progress + the next open milestone (E05 gates surface
           // GO_LIVE/readiness milestones through here for the exec view).
@@ -136,7 +155,9 @@ export async function buildExecutiveDeck(data, format = 'pptx') {
 const INK = '1F2937';
 const ACCENT = '0F62FE';
 const MUTED = '6B7280';
-const STATUS_COLOR = { active: '15803D', at_risk: 'B45309', on_hold: '6B7280' };
+const RAG_HEX = { GREEN: '15803D', AMBER: 'B45309', RED: 'B91C1C' };
+
+const truncate = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 async function buildPptx(data) {
   const pptx = new PptxGenJS();
@@ -170,7 +191,7 @@ async function buildPptx(data) {
       x: 0.6, y: 0.55, w: 12.1, h: 0.7, fontSize: 26, bold: true, color: INK, fontFace: 'Arial',
     });
 
-    const header = ['Project', 'Status', 'Security Gate', 'Open Roadblocks / Top Blockers', 'Next Actions'].map(
+    const header = ['Project', 'Health (RAG)', 'Security Gate', 'Open Roadblocks / Top Blockers', 'Next Actions'].map(
       (t) => ({ text: t, options: { bold: true, color: 'FFFFFF', fill: { color: INK }, fontSize: 12 } }),
     );
     const rows = [header];
@@ -183,11 +204,14 @@ async function buildPptx(data) {
             .map((t) => `• ${t.title} (${STATUS_LABEL[t.status] ?? t.status}${t.locked ? ' — LOCKED' : ''})`)
             .join('\n')
         : '• All tasks complete';
+      const latestLine = p.latestUpdate ? `\n“${truncate(p.latestUpdate.text, 110)}”` : '';
       rows.push([
-        { text: `${p.name}${p.site ? `\n${p.site}` : ''}`, options: { fontSize: 12, bold: true, color: INK } },
+        { text: `${p.name}${p.site ? `\n${p.site}` : ''}${latestLine}`, options: { fontSize: 12, bold: true, color: INK } },
         {
-          text: STATUS_LABEL[p.overallStatus] ?? p.overallStatus,
-          options: { fontSize: 12, bold: true, color: STATUS_COLOR[p.overallStatus] ?? INK, align: 'center' },
+          // E10: RAG is the headline health marker; the explanation says WHY
+          // (plan §117) and MANUAL flags an active override (plan §25).
+          text: `${p.rag.color}${p.rag.manual ? ' (MANUAL)' : ''}\n${truncate(p.rag.explanation, 90)}`,
+          options: { fontSize: 11, bold: true, color: RAG_HEX[p.rag.color] ?? INK, align: 'center' },
         },
         {
           text: GATE_LABEL[p.securityGateStatus] ?? p.securityGateStatus,
@@ -273,11 +297,19 @@ function buildPdf(data) {
         if (doc.y > doc.page.height - 160) doc.addPage();
         doc.font('Helvetica-Bold').fontSize(14).fillColor('#1F2937')
           .text(`${p.name}${p.site ? `  ·  ${p.site}` : ''}`);
+        // E10: RAG headline with the "why" (plan §117) + MANUAL badge (plan §25).
+        doc.font('Helvetica-Bold').fontSize(11)
+          .fillColor(`#${RAG_HEX[p.rag.color] ?? '1F2937'}`)
+          .text(`Health: ${p.rag.color}${p.rag.manual ? ' (MANUAL)' : ''} — ${p.rag.explanation}`);
         doc.font('Helvetica').fontSize(11)
           .fillColor(p.overallStatus === 'at_risk' ? '#B45309' : '#15803D')
           .text(`Status: ${STATUS_LABEL[p.overallStatus] ?? p.overallStatus}`, { continued: true })
           .fillColor(p.securityGateStatus === 'pending' || p.securityGateStatus === 'rejected' ? '#B91C1C' : '#15803D')
           .text(`    Security gate: ${GATE_LABEL[p.securityGateStatus]}`);
+        if (p.latestUpdate) {
+          doc.font('Helvetica-Oblique').fontSize(10.5).fillColor('#374151')
+            .text(`Latest update (${p.latestUpdate.mood}): ${p.latestUpdate.text}`);
+        }
 
         doc.fillColor('#1F2937').font('Helvetica-Bold').fontSize(11)
           .text(`Open roadblocks (${p.openRoadblockCount}):`);

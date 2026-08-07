@@ -47,3 +47,42 @@ Date: 2026-08-07 · Status: accepted
 §9/§80: unauthorized confidential objects return the same NOT_FOUND shape as truly absent ids
 (no FORBIDDEN leak), and are filtered before lists/counts/search/bootstrap/exports. RESTRICTED
 returns 403 only where existence is already known via authorized listing; otherwise also 404.
+
+## ADR-006 — RAG engine adaptation of plan §24 (severities, overdue stand-in, lazy snapshots)
+Date: 2026-08-07 · Status: accepted
+
+Plan §24 defines the four core RAG signals against entities the repo does not fully have yet.
+Adaptations made by the E10 slice (`server/src/services/rag.js`, pure and clock-injected):
+
+1. **Roadblock severities**: the plan uses CRITICAL/MAJOR/MINOR; v2 roadblocks carry
+   `low|medium|high|critical`. Mapping: `critical`→CRITICAL (open ⇒ RED), `high`→MAJOR
+   (open ⇒ AMBER); `medium|low` do not color the signal. The E11 roadblock-lifecycle rework may
+   rename the enum; the signal logic stays.
+2. **Overdue ACTIONS → overdue tasks**: §24's third signal counts overdue actions, but actions
+   arrive with E09. Until then, open tasks with `plannedFinish` in the past stand in
+   (0 GREEN / 1–3 AMBER / ≥4 RED). The signal key is deliberately the neutral **`overdueWork`**
+   and will keep that key when E09 swaps the underlying rows — no wire/UI break.
+3. **Freshness source**: the explicit-status-update age (§26) comes from the new append-only
+   `project_updates` (E13 core, shipped in the same slice); "total silence" (RED) additionally
+   requires >30 days without meaningful activity, defined as the max of latest update
+   `createdAt` and task/milestone/roadblock `updatedAt` (project `createdAt` as last resort).
+   Exemptions per §24: operatingStatus ON_HOLD/COMPLETED/CANCELLED, lifecycleStage RUN/CLOSED.
+4. **Trend snapshots (§133) are captured lazily at read time**: project decoration compares the
+   computed/effective color against the project's last `rag_snapshots` row and appends on
+   change. Chosen over write-path hooks because every RAG input (milestones, tasks, roadblocks,
+   updates, override, and the passage of time itself — overdue/freshness flips need NO write)
+   funnels through the same decoration, and it behaves identically for MemoryRepo and Postgres.
+   Consequence: a color change is recorded when first OBSERVED, not when the underlying write
+   happened — acceptable for trend charting; §133's "no fabricated history" holds (the first
+   snapshot is the first observation, never backfilled).
+5. **Manual override storage**: a single `projects.rag_override` JSONB ({color, reason, byId,
+   at}) rather than columns — it is an atomic, optional, server-managed blob with no relational
+   queries against its parts; both repos stay identical. Reason must trim to ≥30 chars
+   (§25) → new error code `RAG_OVERRIDE_REASON_TOO_SHORT`; set/clear are manage-level, bump the
+   project version, and audit reason + before/after color permanently. No expiry policy yet
+   (§25 allows one): the override persists until explicitly cleared — revisit with E14
+   (executive commentary) if a time-boxed override is wanted.
+6. **Project updates are online-only and append-only for now**: POST + GET only; no
+   PATCH/DELETE routes, DB trigger backstop, not in the offline sync entity set (append-only
+   rows carry no OCC version; ADR-003's sync rework should decide how/if they ride offline).
+   Revisions per §32 arrive with the full E13 epic.
