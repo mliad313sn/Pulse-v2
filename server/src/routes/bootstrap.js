@@ -27,8 +27,10 @@ export function bootstrapRouter() {
     const milestones = [...milestonesByProject.entries()]
       .filter(([pid]) => visible.has(pid))
       .flatMap(([, rows]) => rows);
+    const directory = (await repo.listUsers()).map(publicUser);
     res.json({
       user: publicUser(req.user),
+      users: directory,
       projects: withPmAll(visibleProjects, membersByProject, milestonesByProject),
       tasks: await withLocked(repo, visibleTasks, { tasks, projects }),
       roadblocks: roadblocks.filter((r) => visible.has(r.projectId)),

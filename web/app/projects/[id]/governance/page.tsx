@@ -32,6 +32,7 @@ import {
   OPERATING_STATUS_META,
 } from "@/lib/utils";
 import { PageHeader, SectionHeader } from "@/components/Headings";
+import EditProjectButton from "@/components/EditProjectDialog";
 import EmptyState from "@/components/EmptyState";
 import { SkeletonList } from "@/components/Skeleton";
 import { Dialog, DialogActions, Field, FormError, Select, TextArea } from "@/components/Dialog";
@@ -568,7 +569,16 @@ export default function GovernancePage({ params }: { params: Promise<{ id: strin
       </section>
 
       <section>
-        <SectionHeader>Next gate</SectionHeader>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <SectionHeader className="mb-0">Next gate</SectionHeader>
+          {/* Unmet field requirements (sponsor, dates, plans…) are fixed here. */}
+          <EditProjectButton
+            project={project}
+            members={members}
+            variant="link"
+            onSaved={() => void onGateChanged()}
+          />
+        </div>
         {!online ? (
           <EmptyState size="md">
             Gate status needs a live connection — reconnect to see requirements and requests.

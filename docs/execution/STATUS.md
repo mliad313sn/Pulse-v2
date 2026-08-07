@@ -1,6 +1,6 @@
 # Execution Status
 
-Updated: 2026-08-07 (Wave 1 slices 1-2 COMPLETE and verified)
+Updated: 2026-08-07 (Wave 1 complete; Wave 2 governance slice COMPLETE and verified)
 
 ## Where we are
 
@@ -43,10 +43,24 @@ project_members with single-PM constraint + viewer-PM ban; project-scoped write 
 lifecycle stage fields with one-step guard (gate engine placeholder); Admin Center UI; project
 creation + members UI; lifecycle/status/code chips.
 
+## Completed slice 3: E05 Governance + E08 milestones core — DONE
+Verified: 138/138 server tests (25 suites) · real-Postgres smoke (ledger immutability trigger,
+pending-uniqueness index) · typed web build · browser gate walk ground-truth verified (edit
+project → G0 checklist green → request → approve by second user → stage INITIATION + ledger row).
+Delivered: gate engine G0–G5 (pure evaluators, 422 missing lists), gate requests + decisions
+(steering-only G2, ADMIN-without-steering denied, self-decision ban, transactional approve),
+immutable approval_ledger (DB trigger + push-only repos), direct lifecycleStage writes blocked
+(ADMIN one-step-backward correction audited), ON_HOLD/CANCELLED reasons, milestones entity
+(7 types, weights, OCC) + computed explained progress, War Room UI (stepper/checklist/request/
+decide/ledger/status), Edit Project dialog covering all gate-evidence fields, user directory
+opened read-only to all authenticated roles (people pickers) + users in bootstrap.
+
 ## Next slices (in order)
-1. E05: gate engine G0–G5 (data-driven requirements) + immutable approval ledger + Steering
-   privilege enforcement (PLANNING→EXECUTION) + War Room screen + INVALID_LIFECYCLE_TRANSITION
-   replaced by gate-checked transitions.
+1. E07 core: workstreams + typed task dependencies (FS first) + cycle prevention; Gantt read view.
+2. E10: computed RAG (4 signals, worst-wins, explanation) + freshness + manual override w/ reason.
+3. E25/E26 rework per ADR-003: strict conflicts (drop LWW), ordered halt-on-refusal offline queue.
+4. E09 Actions + E11 roadblock lifecycle upgrade (RAISED→…→VERIFIED) + risks + CAPA.
+5. E22 My Work + Portfolio Wall KPI banner (drill-down).
 4. E26/E25 rework: strict conflict (drop LWW for core objects), ordered halt-on-refusal offline queue.
 5. E07/E08: workstreams, typed dependencies, milestones, weighted progress.
 

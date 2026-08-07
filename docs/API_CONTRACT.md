@@ -66,7 +66,7 @@ Rules:
 
 | Endpoint | Behavior |
 |---|---|
-| `GET /api/users` | full directory incl. baseRole, privileges, isActive |
+| `GET /api/users` | read-only directory for ANY authenticated user (people pickers); credential fields stripped |
 | `POST /api/users` `{name,email,division,site?,baseRole,privileges?}` | `201 {user, temporaryPassword}` — password generated server-side, `mustChangePassword=true`; the temp password is returned ONCE and never logged/audited |
 | `PATCH /api/users/:id` `{baseRole?,privileges?,isActive?,division?,site?,enterpriseAccess?}` | `200 {user}`; deactivating (`isActive:false`) revokes all the user's sessions |
 | `POST /api/users/:id/reset-password` | `200 {temporaryPassword}` — revokes sessions, sets `mustChangePassword` |

@@ -34,7 +34,18 @@ async function loadUserOr404(repo, id) {
 export function usersRouter() {
   const router = Router();
 
-  // Every user-management endpoint is ADMIN-only.
+  /**
+   * GET /api/users — read-only directory for ANY authenticated user.
+   * People-pickers (sponsor, support owner, assignees, members) need it for
+   * every role; publicUser strips credential/security fields. All MUTATING
+   * user-management endpoints below remain ADMIN-only.
+   */
+  router.get('/', asyncHandler(async (req, res) => {
+    const users = await req.app.locals.repo.listUsers();
+    res.json(users.map(publicUser));
+  }));
+
+  // Everything past this point is ADMIN-only user management.
   router.use((req, res, next) => {
     try {
       assertCan(req.user, 'user:manage');
@@ -43,12 +54,6 @@ export function usersRouter() {
       next(err);
     }
   });
-
-  /** GET /api/users — full directory incl. baseRole, privileges, isActive. */
-  router.get('/', asyncHandler(async (req, res) => {
-    const users = await req.app.locals.repo.listUsers();
-    res.json(users.map(publicUser));
-  }));
 
   /** POST /api/users — create with a generated temporary password. */
   router.post('/', asyncHandler(async (req, res) => {

@@ -47,8 +47,8 @@ export function apiErrorMessage(e: unknown, fallback: string): string {
   if (e instanceof ApiError) {
     if (e.code === "FORBIDDEN") return "Your role is not allowed to do that.";
     if (e.code === "VALIDATION") return e.message || "The server rejected the input — check the fields.";
-    if (e.code === "INVALID_LIFECYCLE_TRANSITION") {
-      return "That lifecycle stage change is not allowed from the current stage.";
+    if (e.code === "GATE_REQUEST_PENDING") {
+      return "A gate request is already pending for this project.";
     }
     return e.message || `Request failed (${e.code}).`;
   }

@@ -25,7 +25,9 @@ export function gateErrorMessage(e: unknown, fallback: string): string {
         ? `Gate requirements not met: ${missing.join(", ")}.`
         : "Gate requirements are not met yet.";
     }
-    if (e.status === 409) return "A gate request is already pending for this project.";
+    if (e.status === 409 || e.code === "GATE_REQUEST_PENDING") {
+      return "A gate request is already pending for this project.";
+    }
     if (e.code === "FORBIDDEN") return "Your role is not allowed to do that.";
     return e.message || `Request failed (${e.code}).`;
   }

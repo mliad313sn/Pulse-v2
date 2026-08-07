@@ -126,7 +126,10 @@ describe('E03 — permission matrix', () => {
       } else {
         assert.equal(create.status, 403, `create user as ${role}`);
         assert.equal(patch.status, 403, `patch user as ${role}`);
-        assert.equal(list.status, 403, `list users as ${role}`);
+        // Read-only directory is open to every authenticated role (people
+        // pickers need it); credential fields must never appear.
+        assert.equal(list.status, 200, `list users as ${role}`);
+        assert.ok(!JSON.stringify(list.body).toLowerCase().includes('passwordhash'));
       }
     }
     // undo the admin's site change

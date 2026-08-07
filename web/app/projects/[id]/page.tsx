@@ -9,6 +9,7 @@ import Kanban from "@/components/Kanban";
 import AuditPeek from "@/components/AuditPeek";
 import EmptyState from "@/components/EmptyState";
 import ProjectMembers from "@/components/ProjectMembers";
+import EditProjectButton from "@/components/EditProjectDialog";
 import ProjectProgress from "@/components/ProjectProgress";
 import Milestones from "@/components/Milestones";
 import { PageHeader } from "@/components/Headings";
@@ -99,6 +100,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           }
           action={
             <div className="flex flex-wrap items-center gap-2">
+              <EditProjectButton project={project} />
               <Link
                 href={`/projects/${project.id}/governance`}
                 className="flex min-h-[44px] items-center gap-1.5 rounded-xl border border-indigo-300 px-4 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-50 dark:border-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-950/40"
