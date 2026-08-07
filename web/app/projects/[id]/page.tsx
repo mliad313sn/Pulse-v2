@@ -10,7 +10,15 @@ import AuditPeek from "@/components/AuditPeek";
 import EmptyState from "@/components/EmptyState";
 import { PageHeader } from "@/components/Headings";
 import LogRoadblockButton from "@/components/LogRoadblockButton";
-import { CountPill, Pill, ProjectStatusBadge, SecurityGateBadge, SeverityBadge, TagChip } from "@/components/Badges";
+import {
+  ClassificationBadge,
+  CountPill,
+  Pill,
+  ProjectStatusBadge,
+  SecurityGateBadge,
+  SeverityBadge,
+  TagChip,
+} from "@/components/Badges";
 import { PlusIcon } from "@/components/Icons";
 import { SkeletonBoard } from "@/components/Skeleton";
 import { divisionMeta, fmtDateTime, cn } from "@/lib/utils";
@@ -24,7 +32,7 @@ const RB_NEXT: Record<RoadblockStatus, { label: string; next: RoadblockStatus } 
 
 export default function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const { projects, roadblocks, users, updateRoadblock, bootLoading, openRoadblock } = useApp();
+  const { projects, roadblocks, users, updateRoadblock, bootLoading, openRoadblock, canWrite } = useApp();
 
   const project = projects.find((p) => p.id === id);
   const projectRoadblocks = useMemo(
@@ -82,11 +90,14 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             </>
           }
           action={
-            <LogRoadblockButton variant="solid" onClick={() => openRoadblock({ projectId: project.id })} />
+            canWrite ? (
+              <LogRoadblockButton variant="solid" onClick={() => openRoadblock({ projectId: project.id })} />
+            ) : undefined
           }
         />
         <div className="mt-3 flex flex-wrap items-center gap-1.5">
           <ProjectStatusBadge status={project.overallStatus} />
+          <ClassificationBadge classification={project.classification} />
           <SecurityGateBadge status={project.securityGateStatus} />
           {project.strategicTag && <TagChip tag={project.strategicTag} tone="indigo" />}
           {project.cgeitTag && <TagChip tag={project.cgeitTag} tone="violet" />}
@@ -104,14 +115,16 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             Roadblocks
             {openRbs.length > 0 && <CountPill>{openRbs.length} open</CountPill>}
           </h2>
-          <button
-            type="button"
-            onClick={() => openRoadblock({ projectId: project.id })}
-            className="flex min-h-[44px] items-center gap-1.5 rounded-xl px-3 text-sm font-medium text-rose-600 transition hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-900/30"
-          >
-            <PlusIcon className="h-4 w-4" />
-            New
-          </button>
+          {canWrite && (
+            <button
+              type="button"
+              onClick={() => openRoadblock({ projectId: project.id })}
+              className="flex min-h-[44px] items-center gap-1.5 rounded-xl px-3 text-sm font-medium text-rose-600 transition hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-900/30"
+            >
+              <PlusIcon className="h-4 w-4" />
+              New
+            </button>
+          )}
         </div>
         {projectRoadblocks.length === 0 ? (
           <EmptyState size="sm">No roadblocks logged for this project.</EmptyState>
@@ -142,7 +155,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
                       {reporter ? `Reported by ${reporter.name} · ` : ""}
                       {fmtDateTime(rb.createdAt || rb.updatedAt)}
                     </span>
-                    {action && (
+                    {action && canWrite && (
                       <button
                         type="button"
                         onClick={() => void updateRoadblock(rb.id, { status: action.next })}

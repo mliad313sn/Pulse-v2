@@ -1,6 +1,10 @@
 "use client";
 
 // Central offline-first app store.
+// - Session: HttpOnly cookie (ppm_session). Boot calls GET /api/auth/me; 401
+//   while online → login screen. Offline with a cached user keeps read-only
+//   access to the cached workspace (writes queue as usual); reconnect
+//   revalidates and only a real 401 clears local state.
 // - Reads render from IndexedDB first (instant), then refresh over the network.
 // - Mutations apply optimistically to IndexedDB + state. When online they go
 //   straight to PATCH/POST (OCC); when offline (or on network failure) they are
@@ -17,13 +21,14 @@ import {
   type ReactNode,
 } from "react";
 import * as idb from "./db";
-import { api, ApiError, USER_ID_KEY } from "./api";
+import { api, ApiError, setAuthSignalHandler } from "./api";
 import { enqueueOp, flushOutbox, outboxCount } from "./sync";
-import { isGatedTransition, safeLocalGet, safeLocalRemove, safeLocalSet, uuid } from "./utils";
+import { canDecideApprovals, canWriteUser, isGatedTransition, safeLocalRemove, uuid } from "./utils";
 import { useToast } from "@/components/Toast";
 import type {
   Bootstrap,
   ConflictEntry,
+  LoginResponse,
   Project,
   QueuedOp,
   Roadblock,
@@ -34,6 +39,19 @@ import type {
   Task,
   User,
 } from "./types";
+
+// Cleared on logout / session expiry (plan §125: clear sensitive caches on logout).
+const LOCAL_KEYS_TO_CLEAR = ["opspm360:clientId", "opspm360:userId"];
+const IDB_STORES: idb.StoreName[] = [
+  "projects",
+  "tasks",
+  "roadblocks",
+  "approvals",
+  "users",
+  "outbox",
+  "conflicts",
+  "meta",
+];
 
 type EntityListKey = "projects" | "tasks" | "roadblocks";
 
@@ -47,6 +65,10 @@ const ENTITY_TO_LIST: Record<SyncEntity, EntityListKey> = {
 export interface AppState {
   ready: boolean;
   user: User | null;
+  /** Forced password change gate — blocks the app until resolved. */
+  mustChangePassword: boolean;
+  /** Voluntary change-password screen (user menu). */
+  changePasswordOpen: boolean;
   users: User[];
   usersLoading: boolean;
   projects: Project[];
@@ -73,8 +95,15 @@ export interface MutateOutcome {
 }
 
 interface AppActions {
-  login: (user: User) => Promise<void>;
-  logout: () => void;
+  /** Hide/disable write affordances for VIEWER accounts (server still enforces). */
+  canWrite: boolean;
+  /** Only the security_reviewer privilege may decide approvals. */
+  canDecide: boolean;
+  login: (email: string, password: string) => Promise<void>;
+  logout: () => Promise<void>;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
+  openChangePassword: () => void;
+  closeChangePassword: () => void;
   loadUsers: () => Promise<void>;
   moveTask: (taskId: string, status: Task["status"]) => Promise<MutateOutcome>;
   updateRoadblock: (id: string, fields: Partial<Roadblock>) => Promise<MutateOutcome>;
@@ -99,6 +128,8 @@ interface AppActions {
 const INITIAL_STATE: AppState = {
   ready: false,
   user: null,
+  mustChangePassword: false,
+  changePasswordOpen: false,
   users: [],
   usersLoading: false,
   projects: [],
@@ -224,7 +255,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       if (code === "VERSION_CONFLICT") return "Someone else updated this first — refreshed to the latest version.";
       if (code === "FORBIDDEN") return "Your role is not allowed to do that.";
-      if (code === "UNAUTHENTICATED") return "Session not recognized — pick your user again.";
+      if (code === "UNAUTHENTICATED" || code === "AUTH_REQUIRED") return "Your session has expired — sign in again.";
       return `Change to ${entity} was rejected${code ? ` (${code})` : ""}.`;
     },
     [],
@@ -345,14 +376,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         user: boot.user ?? s.user,
         bootLoading: false,
       });
-    } catch (e) {
+    } catch {
       patch({ bootLoading: false });
-      if (e instanceof ApiError && e.status === 401) {
-        toast("Session not recognized — pick your user again.", "warning");
-      }
+      // 401/403 auth signals are routed through the api-layer handler;
       // network failure: stay on cache silently (offline-first)
     }
-  }, [patch, toast]);
+  }, [patch]);
 
   const loadUsers = useCallback(async () => {
     patch({ usersLoading: true });
@@ -365,28 +394,100 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [patch]);
 
+  // ---- auth -----------------------------------------------------------------
+
+  /** Drop the local session: wipe IndexedDB stores + localStorage cache → login screen. */
+  const signOutLocal = useCallback(async () => {
+    patch({
+      user: null,
+      mustChangePassword: false,
+      changePasswordOpen: false,
+      users: [],
+      projects: [],
+      tasks: [],
+      roadblocks: [],
+      approvals: [],
+      conflicts: [],
+      outboxCount: 0,
+      refreshedAt: null,
+      bootLoading: false,
+      roadblockTarget: null,
+    });
+    LOCAL_KEYS_TO_CLEAR.forEach(safeLocalRemove);
+    await Promise.all(IDB_STORES.map((store) => idb.replaceAll(store, [])));
+  }, [patch]);
+
   const login = useCallback(
-    async (user: User) => {
-      safeLocalSet(USER_ID_KEY, user.id);
+    async (email: string, password: string) => {
+      // Errors (401 AUTH_FAILED, 423 ACCOUNT_LOCKED, 403 ACCOUNT_DISABLED,
+      // 429 RATE_LIMITED) propagate as ApiError for the login screen to render.
+      const res = await api<LoginResponse>("/api/auth/login", {
+        method: "POST",
+        body: { email, password },
+      });
+      const mustChange = Boolean(res.mustChangePassword || res.user?.mustChangePassword);
+      const user = res.user;
       await idb.setMeta("currentUser", user);
-      patch({ user, bootLoading: true });
-      await refresh();
-      await flush();
+      patch({ user, mustChangePassword: mustChange, bootLoading: !mustChange });
+      if (!mustChange) {
+        await refresh();
+        await flush();
+        if (stateRef.current.users.length === 0) void loadUsers();
+      }
     },
-    [patch, refresh, flush],
+    [patch, refresh, flush, loadUsers],
   );
 
-  const logout = useCallback(() => {
-    safeLocalRemove(USER_ID_KEY);
-    void idb.delMeta("currentUser");
-    patch({ user: null });
-    void loadUsers();
-  }, [patch, loadUsers]);
+  const logout = useCallback(async () => {
+    try {
+      await api("/api/auth/logout", { method: "POST" }); // 204
+    } catch {
+      // best effort — the local session is cleared regardless
+    }
+    await signOutLocal();
+  }, [signOutLocal]);
+
+  const changePassword = useCallback(
+    async (currentPassword: string, newPassword: string) => {
+      // 400 VALIDATION propagates as ApiError for the screen to render.
+      await api("/api/auth/change-password", {
+        method: "POST",
+        body: { currentPassword, newPassword },
+      });
+      const wasForced = stateRef.current.mustChangePassword;
+      const user = stateRef.current.user
+        ? { ...stateRef.current.user, mustChangePassword: false }
+        : null;
+      if (user) await idb.setMeta("currentUser", user);
+      patch({
+        user,
+        mustChangePassword: false,
+        changePasswordOpen: false,
+        bootLoading: wasForced && stateRef.current.projects.length === 0,
+      });
+      await refresh();
+      await flush();
+      if (stateRef.current.users.length === 0) void loadUsers();
+    },
+    [patch, refresh, flush, loadUsers],
+  );
+
+  const openChangePassword = useCallback(() => patch({ changePasswordOpen: true }), [patch]);
+  const closeChangePassword = useCallback(() => patch({ changePasswordOpen: false }), [patch]);
 
   // ---- mutations ------------------------------------------------------------
 
+  /** Store-level VIEWER guard — the server is the real enforcement point. */
+  const guardWrite = useCallback((): MutateOutcome | null => {
+    if (canWriteUser(stateRef.current.user)) return null;
+    toast("Read-only account — viewers cannot make changes.", "warning");
+    return { ok: false, code: "READ_ONLY" };
+  }, [toast]);
+
   const mutateEntity = useCallback(
     async (entity: SyncEntity, entityId: string, fields: Record<string, unknown>): Promise<MutateOutcome> => {
+      const denied = guardWrite();
+      if (denied) return denied;
       const listKey = ENTITY_TO_LIST[entity];
       const s = stateRef.current;
       const current = (s[listKey] as Array<Project | Task | Roadblock>).find((x) => x.id === entityId);
@@ -448,7 +549,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return queueIt();
       }
     },
-    [setEntity, toast, friendlyError, refreshOutboxCount],
+    [setEntity, toast, friendlyError, refreshOutboxCount, guardWrite],
   );
 
   const moveTask = useCallback(
@@ -477,6 +578,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       description: string;
       severity: RoadblockSeverity;
     }): Promise<MutateOutcome> => {
+      const denied = guardWrite();
+      if (denied) return denied;
       const s = stateRef.current;
       const now = new Date().toISOString();
       const id = uuid();
@@ -543,7 +646,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return queueIt();
       }
     },
-    [setEntity, removeEntity, toast, refreshOutboxCount],
+    [setEntity, removeEntity, toast, refreshOutboxCount, guardWrite],
   );
 
   const decideApproval = useCallback(
@@ -553,6 +656,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       notes?: string,
     ): Promise<MutateOutcome> => {
       const s = stateRef.current;
+      if (!canDecideApprovals(s.user)) {
+        toast("Only security reviewers can resolve approvals.", "warning");
+        return { ok: false, code: "FORBIDDEN" };
+      }
       if (!s.online) {
         toast("Approval decisions need a live connection to InfoSec systems.", "warning");
         return { ok: false, code: "OFFLINE" };
@@ -629,6 +736,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // ---- boot & connectivity --------------------------------------------------
 
+  /**
+   * Validate the session cookie against GET /api/auth/me.
+   * Returns "authenticated" | "unauthenticated" | "unreachable".
+   * On 401 the api-layer auth signal also fires (signOutLocal — idempotent).
+   */
+  const revalidateSession = useCallback(async (): Promise<"authenticated" | "unauthenticated" | "unreachable"> => {
+    try {
+      const me = await api<{ user: User }>("/api/auth/me");
+      const user = me.user;
+      await idb.setMeta("currentUser", user);
+      patch({ user, mustChangePassword: Boolean(user.mustChangePassword) });
+      return "authenticated";
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        await signOutLocal();
+        return "unauthenticated";
+      }
+      if (e instanceof ApiError && e.status === 403 && e.code === "PASSWORD_CHANGE_REQUIRED") {
+        patch({ mustChangePassword: true });
+        return "authenticated";
+      }
+      // Server unreachable — treat as offline: keep the cached workspace.
+      return "unreachable";
+    }
+  }, [patch, signOutLocal]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -646,10 +779,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           idb.getMeta<string>("refreshedAt"),
         ]);
       if (cancelled) return;
-      const storedId = safeLocalGet(USER_ID_KEY);
-      const user: User | null = storedId
-        ? users.find((u) => u.id === storedId) ?? cachedUser ?? null
-        : null;
+      // Offline (or server unreachable) with a cached user keeps read-only
+      // access to the cached workspace; reconnect revalidates.
+      const user: User | null = cachedUser ?? null;
       patch({
         ready: true,
         online,
@@ -661,15 +793,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
         conflicts,
         outboxCount: queuedCount,
         user,
+        mustChangePassword: Boolean(user?.mustChangePassword),
         refreshedAt: refreshedAt ?? null,
-        bootLoading: Boolean(user) && projects.length === 0,
+        bootLoading: Boolean(user) && projects.length === 0 && online,
       });
       if (online) {
-        if (user) {
+        const session = await revalidateSession();
+        if (cancelled || session !== "authenticated") {
+          if (session !== "authenticated") patch({ bootLoading: false });
+          return;
+        }
+        if (!stateRef.current.mustChangePassword) {
           await flush();
           await refresh();
+          if (stateRef.current.users.length === 0) void loadUsers();
+        } else {
+          patch({ bootLoading: false });
         }
-        if (!user || users.length === 0) await loadUsers();
       }
     })();
     return () => {
@@ -678,10 +818,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Single place any endpoint's 401 AUTH_REQUIRED / 403 PASSWORD_CHANGE_REQUIRED lands.
+  useEffect(() => {
+    setAuthSignalHandler((signal) => {
+      if (signal === "password-change") {
+        patch({ mustChangePassword: true });
+        return;
+      }
+      // 401 while ONLINE → unauthenticated. (While offline, requests fail at the
+      // network layer and never produce a 401, so cached access is preserved.)
+      if (typeof navigator !== "undefined" && !navigator.onLine) return;
+      if (stateRef.current.user) void signOutLocal();
+    });
+    return () => setAuthSignalHandler(null);
+  }, [patch, signOutLocal]);
+
   useEffect(() => {
     const goOnline = () => {
       patch({ online: true });
       void (async () => {
+        if (!stateRef.current.user) return;
+        // Reconnect revalidates the session before syncing; a 401 here clears
+        // local state back to the login screen (handled in revalidateSession).
+        const session = await revalidateSession();
+        if (session !== "authenticated" || stateRef.current.mustChangePassword) return;
         await flush();
         await refresh();
       })();
@@ -698,13 +858,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("offline", goOffline);
       window.clearInterval(interval);
     };
-  }, [patch, flush, refresh]);
+  }, [patch, flush, refresh, revalidateSession]);
 
   const value = useMemo<AppState & AppActions>(
     () => ({
       ...state,
+      canWrite: canWriteUser(state.user),
+      canDecide: canDecideApprovals(state.user),
       login,
       logout,
+      changePassword,
+      openChangePassword,
+      closeChangePassword,
       loadUsers,
       moveTask,
       updateRoadblock,
@@ -720,6 +885,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       state,
       login,
       logout,
+      changePassword,
+      openChangePassword,
+      closeChangePassword,
       loadUsers,
       moveTask,
       updateRoadblock,

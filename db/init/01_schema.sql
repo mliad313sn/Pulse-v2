@@ -53,18 +53,54 @@ INSERT INTO security_risk_tags (code) VALUES
     ('external_exposure');
 
 -- ----------------------------------------------------------------------------
--- Users (demo-grade identity; real deployments front this with SSO)
+-- Users — plan base roles (ADR-004) + privilege modifiers.
+--   base_role:  ADMIN | DIVISION_LEAD | CONTRIBUTOR | VIEWER
+--   privileges: capability modifiers ('security_reviewer', 'steering')
 -- ----------------------------------------------------------------------------
 CREATE TABLE users (
-    id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name      TEXT NOT NULL,
-    email     TEXT UNIQUE NOT NULL,
-    division  TEXT NOT NULL REFERENCES divisions(code),
-    site      TEXT REFERENCES sites(code),
-    role      TEXT NOT NULL DEFAULT 'member'
-              CHECK (role IN ('member', 'site_manager', 'division_lead', 'group_manager', 'security_reviewer')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name                 TEXT NOT NULL,
+    email                TEXT UNIQUE NOT NULL,
+    division             TEXT NOT NULL REFERENCES divisions(code),
+    site                 TEXT REFERENCES sites(code),
+    base_role            TEXT NOT NULL DEFAULT 'CONTRIBUTOR'
+                         CHECK (base_role IN ('ADMIN', 'DIVISION_LEAD', 'CONTRIBUTOR', 'VIEWER')),
+    privileges           TEXT[] NOT NULL DEFAULT '{}',
+    is_active            BOOLEAN NOT NULL DEFAULT true,
+    must_change_password BOOLEAN NOT NULL DEFAULT false,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ----------------------------------------------------------------------------
+-- Local credentials (E02). bcrypt hash at rest; never exposed over the API.
+-- Lockout tracking lives HERE (design choice documented in DECISIONS/ADR-002
+-- slice): failed_count/first_failed_at implement the "5 failures within
+-- 15 minutes" window; locked_until implements the 15-minute lock.
+-- This table is intentionally NOT audited (no secrets in the ledger).
+-- ----------------------------------------------------------------------------
+CREATE TABLE user_credentials (
+    user_id         UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    password_hash   TEXT NOT NULL,
+    failed_count    INTEGER NOT NULL DEFAULT 0,
+    first_failed_at TIMESTAMPTZ,
+    locked_until    TIMESTAMPTZ,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ----------------------------------------------------------------------------
+-- Server-side sessions (E02). Opaque 32-byte token issued to the client
+-- (cookie ppm_session or Authorization: Bearer); only its SHA-256 is stored.
+-- ----------------------------------------------------------------------------
+CREATE TABLE user_sessions (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash   TEXT UNIQUE NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at   TIMESTAMPTZ NOT NULL,
+    last_seen_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_user_sessions_user ON user_sessions(user_id);
 
 -- ----------------------------------------------------------------------------
 -- Projects — OCC via (version, updated_at)
@@ -80,6 +116,8 @@ CREATE TABLE projects (
                                               'resource_optimization', 'performance_measurement')),
     strategic_tag        TEXT,                          -- EA blueprint mapping
     risk_tags            TEXT[] NOT NULL DEFAULT '{}',  -- e.g. {network_alteration}
+    classification       TEXT NOT NULL DEFAULT 'internal'
+                         CHECK (classification IN ('internal', 'restricted', 'confidential')),
     overall_status       TEXT NOT NULL DEFAULT 'active'
                          CHECK (overall_status IN ('draft', 'active', 'at_risk', 'on_hold', 'complete')),
     security_gate_status TEXT NOT NULL DEFAULT 'not_required'
@@ -217,6 +255,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+CREATE TRIGGER trg_audit_users     AFTER INSERT OR UPDATE OR DELETE ON users
+    FOR EACH ROW EXECUTE FUNCTION write_audit_log();
 CREATE TRIGGER trg_audit_projects  AFTER INSERT OR UPDATE OR DELETE ON projects
     FOR EACH ROW EXECUTE FUNCTION write_audit_log();
 CREATE TRIGGER trg_audit_tasks     AFTER INSERT OR UPDATE OR DELETE ON tasks
@@ -314,3 +354,5 @@ BEGIN
     END IF;
 END $$;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO bi_reader;
+-- Never expose credential/session material to BI ingestion.
+REVOKE SELECT ON user_credentials, user_sessions FROM bi_reader;

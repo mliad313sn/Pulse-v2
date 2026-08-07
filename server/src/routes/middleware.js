@@ -1,18 +1,43 @@
-import { ApiError, unauthenticated } from '../errors.js';
+import { ApiError, forbidden, passwordChangeRequired } from '../errors.js';
+import { resolveSession } from '../services/auth.js';
 
 /** Wrap async route handlers so rejections reach the error middleware. */
 export const asyncHandler = (fn) => (req, res, next) =>
   Promise.resolve(fn(req, res, next)).catch(next);
 
-/** Resolves x-user-id -> req.user, else 401 UNAUTHENTICATED. */
+/**
+ * Session auth (ADR-002): resolves cookie ppm_session or Authorization:
+ * Bearer to req.user + req.session. Missing/unknown/expired -> 401
+ * AUTH_REQUIRED. No header-based identity exists in production paths.
+ */
 export const authMiddleware = asyncHandler(async (req, res, next) => {
-  const userId = req.get('x-user-id');
-  if (!userId) throw unauthenticated();
-  const user = await req.app.locals.repo.getUser(userId);
-  if (!user) throw unauthenticated();
+  const { user, session } = await resolveSession(req.app.locals.repo, req);
   req.user = user;
+  req.session = session;
   next();
 });
+
+/**
+ * While mustChangePassword=true every non-auth API call is refused
+ * (403 PASSWORD_CHANGE_REQUIRED). The /api/auth/* routes are mounted before
+ * this middleware, so me/change-password/logout keep working.
+ */
+export const requirePasswordChanged = (req, res, next) => {
+  if (req.user?.mustChangePassword) return next(passwordChangeRequired());
+  next();
+};
+
+/**
+ * VIEWER is hard read-only at the API boundary: every mutating verb on every
+ * business endpoint mounted behind this guard -> 403 FORBIDDEN.
+ */
+export const forbidViewerWrites = (req, res, next) => {
+  const isRead = req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS';
+  if (!isRead && req.user?.baseRole === 'VIEWER') {
+    return next(forbidden('VIEWER accounts are read-only'));
+  }
+  next();
+};
 
 /** Maps typed errors to the contract envelope { error, message, detail }. */
 // eslint-disable-next-line no-unused-vars

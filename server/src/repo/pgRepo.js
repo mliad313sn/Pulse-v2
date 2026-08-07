@@ -16,6 +16,7 @@ const COLUMNS = {
   project: {
     id: 'id', name: 'name', description: 'description', division: 'division', site: 'site',
     cgeitTag: 'cgeit_tag', strategicTag: 'strategic_tag', riskTags: 'risk_tags',
+    classification: 'classification',
     overallStatus: 'overall_status', securityGateStatus: 'security_gate_status',
     ownerId: 'owner_id', version: 'version', updatedAt: 'updated_at', createdAt: 'created_at',
   },
@@ -53,8 +54,28 @@ function mapUser(row) {
   if (!row) return null;
   return {
     id: row.id, name: row.name, email: row.email,
-    division: row.division, site: row.site, role: row.role,
+    division: row.division, site: row.site,
+    baseRole: row.base_role, privileges: row.privileges ?? [],
+    isActive: row.is_active, mustChangePassword: row.must_change_password,
     createdAt: toIso(row.created_at),
+  };
+}
+
+function mapCredential(row) {
+  if (!row) return null;
+  return {
+    userId: row.user_id, passwordHash: row.password_hash,
+    failedCount: row.failed_count, firstFailedAt: toIso(row.first_failed_at),
+    lockedUntil: toIso(row.locked_until), updatedAt: toIso(row.updated_at),
+  };
+}
+
+function mapSession(row) {
+  if (!row) return null;
+  return {
+    id: row.id, userId: row.user_id, tokenHash: row.token_hash,
+    createdAt: toIso(row.created_at), expiresAt: toIso(row.expires_at),
+    lastSeenAt: toIso(row.last_seen_at),
   };
 }
 
@@ -96,6 +117,94 @@ class PgQueries {
   async getUser(id) {
     const { rows } = await this._query('SELECT * FROM users WHERE id = $1', [id]);
     return mapUser(rows[0] ?? null);
+  }
+
+  async getUserByEmail(email) {
+    const { rows } = await this._query('SELECT * FROM users WHERE lower(email) = lower($1)', [email]);
+    return mapUser(rows[0] ?? null);
+  }
+
+  async insertUser(user) {
+    const { rows } = await this._query(
+      `INSERT INTO users (id, name, email, division, site, base_role, privileges, is_active, must_change_password)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [user.id, user.name, user.email, user.division, user.site ?? null,
+       user.baseRole, user.privileges ?? [], user.isActive !== false, user.mustChangePassword === true],
+    );
+    return mapUser(rows[0]);
+  }
+
+  async updateUser(user) {
+    const { rows } = await this._query(
+      `UPDATE users SET name = $2, email = $3, division = $4, site = $5,
+              base_role = $6, privileges = $7, is_active = $8, must_change_password = $9
+       WHERE id = $1 RETURNING *`,
+      [user.id, user.name, user.email, user.division, user.site ?? null,
+       user.baseRole, user.privileges ?? [], user.isActive !== false, user.mustChangePassword === true],
+    );
+    return mapUser(rows[0] ?? null);
+  }
+
+  // ---- credentials (never audited/logged) ----------------------------------
+  async getCredential(userId) {
+    const { rows } = await this._query('SELECT * FROM user_credentials WHERE user_id = $1', [userId]);
+    return mapCredential(rows[0] ?? null);
+  }
+
+  async upsertCredential(cred) {
+    const { rows } = await this._query(
+      `INSERT INTO user_credentials (user_id, password_hash, failed_count, first_failed_at, locked_until, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now())
+       ON CONFLICT (user_id) DO UPDATE SET password_hash = EXCLUDED.password_hash,
+              failed_count = EXCLUDED.failed_count, first_failed_at = EXCLUDED.first_failed_at,
+              locked_until = EXCLUDED.locked_until, updated_at = now()
+       RETURNING *`,
+      [cred.userId, cred.passwordHash, cred.failedCount ?? 0,
+       cred.firstFailedAt ?? null, cred.lockedUntil ?? null],
+    );
+    return mapCredential(rows[0]);
+  }
+
+  // ---- sessions ------------------------------------------------------------
+  async insertSession(session) {
+    const { rows } = await this._query(
+      `INSERT INTO user_sessions (id, user_id, token_hash, created_at, expires_at, last_seen_at)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [session.id, session.userId, session.tokenHash,
+       session.createdAt, session.expiresAt, session.lastSeenAt ?? null],
+    );
+    return mapSession(rows[0]);
+  }
+
+  async getSessionByTokenHash(tokenHash) {
+    const { rows } = await this._query('SELECT * FROM user_sessions WHERE token_hash = $1', [tokenHash]);
+    return mapSession(rows[0] ?? null);
+  }
+
+  async touchSession(id, lastSeenAt) {
+    await this._query('UPDATE user_sessions SET last_seen_at = $2 WHERE id = $1', [id, lastSeenAt]);
+  }
+
+  async deleteSession(id) {
+    await this._query('DELETE FROM user_sessions WHERE id = $1', [id]);
+  }
+
+  async deleteUserSessions(userId, { exceptId } = {}) {
+    if (exceptId) {
+      await this._query('DELETE FROM user_sessions WHERE user_id = $1 AND id <> $2', [userId, exceptId]);
+    } else {
+      await this._query('DELETE FROM user_sessions WHERE user_id = $1', [userId]);
+    }
+  }
+
+  // ---- explicit audit append (auth lifecycle events; no secrets) -----------
+  // audit_logs only forbids UPDATE/DELETE — direct INSERT is allowed.
+  async appendAudit({ entityType, entityId, action, actorId, newData = null }) {
+    await this._query(
+      `INSERT INTO audit_logs (entity_type, entity_id, action, actor_id, new_data)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [entityType, entityId ?? null, action, actorId ?? null, newData == null ? null : JSON.stringify(newData)],
+    );
   }
 
   // ---- generic entity CRUD -------------------------------------------------

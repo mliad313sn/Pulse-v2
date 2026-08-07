@@ -18,14 +18,30 @@ export type RoadblockSeverity = "low" | "medium" | "high" | "critical";
 export type RoadblockStatus = "open" | "mitigating" | "resolved";
 export type ApprovalStatus = "pending" | "approved" | "rejected";
 
+export type BaseRole = "ADMIN" | "DIVISION_LEAD" | "CONTRIBUTOR" | "VIEWER";
+
+/** Privilege modifiers layered on top of the base role. */
+export type Privilege = "security_reviewer" | "steering" | (string & {});
+
 export interface User {
   id: string;
   name: string;
-  role: string;
+  baseRole: BaseRole;
+  privileges: Privilege[];
+  isActive: boolean;
+  mustChangePassword?: boolean;
   division: Division;
   site?: string | null;
   email?: string;
 }
+
+/** POST /api/auth/login response. */
+export interface LoginResponse {
+  user: User;
+  mustChangePassword: boolean;
+}
+
+export type ProjectClassification = "internal" | "restricted" | "confidential";
 
 export interface Project {
   id: string;
@@ -36,6 +52,8 @@ export interface Project {
   cgeitTag?: string | null;
   strategicTag?: string | null;
   riskTags: string[];
+  /** Optional only for stale local caches — the server always sends it. */
+  classification?: ProjectClassification;
   overallStatus: ProjectStatus;
   securityGateStatus: SecurityGateStatus;
   ownerId?: string | null;

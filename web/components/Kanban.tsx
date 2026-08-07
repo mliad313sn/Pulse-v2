@@ -8,7 +8,7 @@ import TaskCard from "./TaskCard";
 import EmptyState from "./EmptyState";
 
 export default function Kanban({ projectId }: { projectId: string }) {
-  const { tasks, moveTask } = useApp();
+  const { tasks, moveTask, canWrite } = useApp();
   const [dragOver, setDragOver] = useState<TaskStatus | null>(null);
   const [moveCandidate, setMoveCandidate] = useState<string | null>(null);
 
@@ -38,18 +38,20 @@ export default function Kanban({ projectId }: { projectId: string }) {
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
       {TASK_STATUSES.map((status) => {
         const meta = STATUS_META[status];
-        const candidate = moveCandidate ? projectTasks.find((t) => t.id === moveCandidate) : null;
+        const candidate = canWrite && moveCandidate ? projectTasks.find((t) => t.id === moveCandidate) : null;
         const showMoveHere = Boolean(candidate) && candidate!.status !== status;
         return (
           <section
             key={status}
             onDragOver={(e) => {
+              if (!canWrite) return;
               e.preventDefault();
               e.dataTransfer.dropEffect = "move";
               setDragOver(status);
             }}
             onDragLeave={() => setDragOver((s) => (s === status ? null : s))}
             onDrop={(e) => {
+              if (!canWrite) return;
               e.preventDefault();
               const id = e.dataTransfer.getData("text/plain");
               if (id) drop(id, status);
@@ -86,18 +88,28 @@ export default function Kanban({ projectId }: { projectId: string }) {
                   key={task.id}
                   task={task}
                   variant="board"
-                  selected={moveCandidate === task.id}
-                  onSelect={() => setMoveCandidate((cur) => (cur === task.id ? null : task.id))}
-                  dragProps={{
-                    draggable: true,
-                    onDragStart: (e) => {
-                      e.dataTransfer.setData("text/plain", task.id);
-                      e.dataTransfer.effectAllowed = "move";
-                    },
-                  }}
+                  selected={canWrite && moveCandidate === task.id}
+                  onSelect={
+                    canWrite
+                      ? () => setMoveCandidate((cur) => (cur === task.id ? null : task.id))
+                      : undefined
+                  }
+                  dragProps={
+                    canWrite
+                      ? {
+                          draggable: true,
+                          onDragStart: (e) => {
+                            e.dataTransfer.setData("text/plain", task.id);
+                            e.dataTransfer.effectAllowed = "move";
+                          },
+                        }
+                      : undefined
+                  }
                 />
               ))}
-              {byStatus[status].length === 0 && <EmptyState size="xs">Drop tasks here</EmptyState>}
+              {byStatus[status].length === 0 && (
+                <EmptyState size="xs">{canWrite ? "Drop tasks here" : "No tasks"}</EmptyState>
+              )}
             </div>
           </section>
         );

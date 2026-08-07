@@ -53,7 +53,8 @@ describe('SC5 — executive deck extraction', () => {
   });
 
   it('deck data groups active projects by division with blockers + next actions + gate flags', async () => {
-    const data = await buildDeckData(srv.repo);
+    const troy = await srv.repo.getUser(USERS.troy); // deck data is built for a requesting user
+    const data = await buildDeckData(srv.repo, troy);
     assert.equal(data.title, 'OpsPM360 Executive Review');
     const codes = data.divisions.map((d) => d.code);
     assert.deepEqual(codes, ['ops', 'infra', 'bizapps']); // divisions with active projects only

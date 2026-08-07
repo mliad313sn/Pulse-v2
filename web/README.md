@@ -25,7 +25,8 @@ Example: `NEXT_PUBLIC_API_URL=http://10.0.0.5:4000 npm run build` (it is inlined
 
 ## How it works
 
-- **Login**: pick a persona from `GET /api/users`; the choice persists in `localStorage` and every request carries `x-user-id`.
+- **Login**: real authentication — `POST /api/auth/login` with email + password. The server sets an HttpOnly `ppm_session` cookie; the client never stores tokens and every request uses `credentials: 'include'`. `GET /api/auth/me` validates the session on boot; a 401 while online returns to the login screen, while offline the cached workspace stays available read-only until reconnect revalidates. Forced password changes (`mustChangePassword` / `403 PASSWORD_CHANGE_REQUIRED`) block the app with a change-password screen. Logout clears IndexedDB and localStorage caches.
+- **Roles**: `baseRole` (ADMIN/DIVISION_LEAD/CONTRIBUTOR/VIEWER) + `privileges` (`security_reviewer`, `steering`). VIEWER sees a "Read-only" pill and no write affordances; approval decisions require `security_reviewer`. Restricted/confidential projects carry a classification badge.
 - **Bootstrap**: after login, `GET /api/bootstrap` is cached wholesale into IndexedDB (`lib/db.ts` — stores: projects, tasks, roadblocks, approvals, users, outbox, conflicts, meta).
 - **Reads**: always render from IndexedDB first, then refresh from the network when online.
 - **Writes**: optimistic to IndexedDB. Online writes go straight to `PATCH`/`POST` (OCC `version` in body); offline or failed writes are queued in the outbox with the contract's sync op shape and flushed through `POST /api/sync` on reconnect (online event + 20s retry + after mutations).
@@ -37,7 +38,7 @@ Example: `NEXT_PUBLIC_API_URL=http://10.0.0.5:4000 npm run build` (it is inlined
 
 | Route | Purpose |
 |---|---|
-| `/` | Persona picker (no user) or role-adaptive dashboard |
+| `/` | Login screen (no session) or role-adaptive dashboard |
 | `/projects/[id]` | Kanban (drag-and-drop + touch fallback), roadblocks, audit peek |
 | `/approvals` | InfoSec approval queue (approve/reject with notes) |
 | `/conflicts` | Manual merge (local vs server, per-field) |

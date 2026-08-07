@@ -2,14 +2,40 @@
 -- OpsPM360 — Demo seed data (Sabodala / Saly mining context)
 -- ============================================================================
 
-INSERT INTO users (id, name, email, division, site, role) VALUES
-    ('00000000-0000-0000-0000-000000000001', 'Awa Ndiaye',     'awa.ndiaye@opspm360.local',     'ops',        'sabodala', 'site_manager'),
-    ('00000000-0000-0000-0000-000000000002', 'Moussa Diallo',  'moussa.diallo@opspm360.local',  'infra',      'saly',     'division_lead'),
-    ('00000000-0000-0000-0000-000000000003', 'Hamady Soumare', 'hamady.soumare@opspm360.local', 'infosec',    'hq',       'security_reviewer'),
-    ('00000000-0000-0000-0000-000000000004', 'Troy Coordinator','troy@opspm360.local',          'management', 'hq',       'group_manager'),
-    ('00000000-0000-0000-0000-000000000005', 'Fatou Sarr',     'fatou.sarr@opspm360.local',     'data',       'hq',       'division_lead'),
-    ('00000000-0000-0000-0000-000000000006', 'Ibrahima Ba',    'ibrahima.ba@opspm360.local',    'bizapps',    'hq',       'member'),
-    ('00000000-0000-0000-0000-000000000007', 'Aminata Fall',   'aminata.fall@opspm360.local',   'ea',         'hq',       'division_lead');
+-- Base roles per ADR-004 mapping (group_manager->ADMIN, division_lead->DIVISION_LEAD,
+-- site_manager/member->CONTRIBUTOR, security_reviewer->CONTRIBUTOR + privilege).
+INSERT INTO users (id, name, email, division, site, base_role, privileges) VALUES
+    ('00000000-0000-0000-0000-000000000001', 'Awa Ndiaye',     'awa.ndiaye@opspm360.local',     'ops',        'sabodala', 'CONTRIBUTOR',   '{}'),
+    ('00000000-0000-0000-0000-000000000002', 'Moussa Diallo',  'moussa.diallo@opspm360.local',  'infra',      'saly',     'DIVISION_LEAD', '{}'),
+    ('00000000-0000-0000-0000-000000000003', 'Hamady Soumare', 'hamady.soumare@opspm360.local', 'infosec',    'hq',       'CONTRIBUTOR',   '{security_reviewer}'),
+    ('00000000-0000-0000-0000-000000000004', 'Troy Coordinator','troy@opspm360.local',          'management', 'hq',       'ADMIN',         '{}'),
+    ('00000000-0000-0000-0000-000000000005', 'Fatou Sarr',     'fatou.sarr@opspm360.local',     'data',       'hq',       'DIVISION_LEAD', '{}'),
+    ('00000000-0000-0000-0000-000000000006', 'Ibrahima Ba',    'ibrahima.ba@opspm360.local',    'bizapps',    'hq',       'CONTRIBUTOR',   '{}'),
+    ('00000000-0000-0000-0000-000000000007', 'Aminata Fall',   'aminata.fall@opspm360.local',   'ea',         'hq',       'DIVISION_LEAD', '{}'),
+    ('00000000-0000-0000-0000-000000000008', 'Aissatou Diop',  'viewer@opspm360.local',         'management', 'hq',       'VIEWER',        '{}');
+
+-- ----------------------------------------------------------------------------
+-- DEV credentials (bcrypt cost 10). DEV/DEMO ONLY — never ship these.
+-- Each seed user's password is  Dev!<firstname>2026 :
+--   troy@opspm360.local            Dev!Troy2026
+--   moussa.diallo@opspm360.local   Dev!Moussa2026
+--   fatou.sarr@opspm360.local      Dev!Fatou2026
+--   aminata.fall@opspm360.local    Dev!Aminata2026
+--   awa.ndiaye@opspm360.local      Dev!Awa2026
+--   ibrahima.ba@opspm360.local     Dev!Ibrahima2026
+--   hamady.soumare@opspm360.local  Dev!Hamady2026
+--   viewer@opspm360.local          Dev!Aissatou2026
+-- (Also documented in server/README.md. MemoryRepo embeds the SAME hashes.)
+-- ----------------------------------------------------------------------------
+INSERT INTO user_credentials (user_id, password_hash) VALUES
+    ('00000000-0000-0000-0000-000000000001', '$2b$10$VdbJjev4Wfz5o6CvSSF1sOfJoM/L5Q5Iib2EQxr3TaGmFYYG/qA1u'),
+    ('00000000-0000-0000-0000-000000000002', '$2b$10$KNfGt2/C4p90.1xmt73/7.8nb7a9Vz9f58Mp9ei62420w/W1stitG'),
+    ('00000000-0000-0000-0000-000000000003', '$2b$10$BDaHTWpwHXuz.U/W.YSaW./EoE3QK6Hjta.q8rgY3N3/jU3QghLnW'),
+    ('00000000-0000-0000-0000-000000000004', '$2b$10$KihyVGlZQaiqH8Bihf26COg78gAiWd1vtAjHWWADb9V.zx6Pp28Wy'),
+    ('00000000-0000-0000-0000-000000000005', '$2b$10$RkzH32eVTcosljPXTTndSOl1S8VqFV.JIVIy5zq2wgg/7CPqQ2pj6'),
+    ('00000000-0000-0000-0000-000000000006', '$2b$10$Pa07A7RaIHeKIWustQ83cuxH5lMhTZ1WylYls0ggzu6tG415WIM3S'),
+    ('00000000-0000-0000-0000-000000000007', '$2b$10$gA8k1kzBqRJPQUh.tZvd3uoBy2XLL3eeA8i.WGedvn8qJG07hadIO'),
+    ('00000000-0000-0000-0000-000000000008', '$2b$10$60lEYqbFOashKXtg0YavEO/RpGgYqbKHkiHf3/oUkH7LvWi8N3jra');
 
 -- Project 1: Ops site prep at Saly (prerequisite for Infra rollout)
 INSERT INTO projects (id, name, description, division, site, cgeit_tag, overall_status, owner_id) VALUES

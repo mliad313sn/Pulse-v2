@@ -61,12 +61,12 @@ export function mountEntityCrud(router, kind, { canCreate, buildPayload, decorat
 }
 
 /**
- * Presentation-level role scoping (not a hard wall): for site-focused users
- * (ops division / site managers), order their own site's rows first.
+ * Presentation-level scoping (not a hard wall): for site-focused users
+ * (ops division), order their own site's rows first.
  */
 export function preferUserSite(rows, user, siteOf = (r) => r.site) {
   if (!user?.site) return rows;
-  if (user.division !== 'ops' && user.role !== 'site_manager') return rows;
+  if (user.division !== 'ops') return rows;
   return [...rows].sort(
     (a, b) => (siteOf(a) === user.site ? 0 : 1) - (siteOf(b) === user.site ? 0 : 1),
   );

@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { cn, PROJECT_STATUS_META, SEVERITY_META, STATUS_META, titleCaseTag } from "@/lib/utils";
-import type { ProjectStatus, RoadblockSeverity, SecurityGateStatus, TaskStatus } from "@/lib/types";
-import { LockIcon, ShieldCheckIcon, ShieldIcon } from "./Icons";
+import type { ProjectClassification, ProjectStatus, RoadblockSeverity, SecurityGateStatus, TaskStatus } from "@/lib/types";
+import { EyeOffIcon, LockIcon, ShieldCheckIcon, ShieldIcon } from "./Icons";
 
 /** Base rounded pill shell shared by every badge. */
 export function Pill({
@@ -97,6 +97,33 @@ export function SecurityGateBadge({ status }: { status: SecurityGateStatus }) {
       {rejected ? "Gate rejected" : "Security gate"}
     </Pill>
   );
+}
+
+/** Small badge for restricted/confidential projects (internal renders nothing). */
+export function ClassificationBadge({ classification }: { classification?: ProjectClassification | null }) {
+  if (classification === "restricted") {
+    return (
+      <Pill
+        title="Restricted — visible only to authorized project members"
+        className="gap-1 bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300"
+      >
+        <EyeOffIcon className="h-3.5 w-3.5" />
+        Restricted
+      </Pill>
+    );
+  }
+  if (classification === "confidential") {
+    return (
+      <Pill
+        title="Confidential — strictly need-to-know"
+        className="gap-1 bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300"
+      >
+        <LockIcon className="h-3.5 w-3.5" />
+        Confidential
+      </Pill>
+    );
+  }
+  return null;
 }
 
 export function TagChip({ tag, tone = "indigo" }: { tag: string; tone?: "indigo" | "violet" | "rose" | "cyan" }) {

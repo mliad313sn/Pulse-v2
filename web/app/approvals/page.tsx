@@ -5,13 +5,10 @@
 import { useApp } from "@/lib/store";
 import ApprovalsQueue from "@/components/ApprovalsQueue";
 import { PageHeader } from "@/components/Headings";
-import { canDecideApprovals } from "@/lib/utils";
 
 export default function ApprovalsPage() {
-  const { user } = useApp();
+  const { user, canDecide } = useApp();
   if (!user) return null;
-
-  const canDecide = canDecideApprovals(user);
 
   return (
     <div className="mx-auto max-w-3xl">

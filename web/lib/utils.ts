@@ -10,9 +10,25 @@ export function isGatedTransition(task: Pick<Task, "locked">, nextStatus: TaskSt
   return Boolean(task.locked) && (nextStatus === "in_progress" || nextStatus === "done");
 }
 
-/** Mirrors the server rule: only security reviewers may resolve approvals. */
-export function canDecideApprovals(user: Pick<User, "role"> | null | undefined): boolean {
-  return user?.role === "security_reviewer";
+/** Mirrors the server rule: only the security_reviewer privilege may resolve approvals. */
+export function canDecideApprovals(user: Pick<User, "privileges"> | null | undefined): boolean {
+  return (user?.privileges ?? []).includes("security_reviewer");
+}
+
+/** VIEWER is hard read-only (server enforces; this only hides/disables affordances). */
+export function canWriteUser(user: Pick<User, "baseRole"> | null | undefined): boolean {
+  return Boolean(user) && user!.baseRole !== "VIEWER";
+}
+
+const BASE_ROLE_LABELS: Record<string, string> = {
+  ADMIN: "Admin",
+  DIVISION_LEAD: "Division Lead",
+  CONTRIBUTOR: "Contributor",
+  VIEWER: "Viewer",
+};
+
+export function baseRoleLabel(role: string | null | undefined): string {
+  return BASE_ROLE_LABELS[role ?? ""] ?? (role || "");
 }
 
 // Safe localStorage wrappers — no-ops when storage is unavailable (SSR, private mode).

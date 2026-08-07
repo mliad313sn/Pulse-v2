@@ -15,7 +15,7 @@ import { SkeletonList } from "@/components/Skeleton";
 import { slaState } from "@/lib/utils";
 
 export default function OpsDashboard() {
-  const { user, tasks, projects, bootLoading, openRoadblock } = useApp();
+  const { user, tasks, projects, bootLoading, openRoadblock, canWrite } = useApp();
   const [showDone, setShowDone] = useState(false);
 
   const myTasks = useMemo(() => {
@@ -40,13 +40,15 @@ export default function OpsDashboard() {
         subtitle={`Zen Mode${user?.site ? ` · ${user.site}` : ""} · ${open.length} open`}
       />
 
-      <LogRoadblockButton
-        variant="solid"
-        size="lg"
-        className="mb-6"
-        disabled={!defaultProject}
-        onClick={() => defaultProject && openRoadblock({ projectId: defaultProject.id })}
-      />
+      {canWrite && (
+        <LogRoadblockButton
+          variant="solid"
+          size="lg"
+          className="mb-6"
+          disabled={!defaultProject}
+          onClick={() => defaultProject && openRoadblock({ projectId: defaultProject.id })}
+        />
+      )}
 
       {bootLoading && myTasks.length === 0 ? (
         <SkeletonList count={4} />

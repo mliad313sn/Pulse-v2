@@ -16,7 +16,9 @@ export function reportsRouter() {
     if (!CONTENT_TYPES[format]) {
       throw validation("format must be 'pptx' or 'pdf'", { allowed: ['pptx', 'pdf'] });
     }
-    const data = await buildDeckData(req.app.locals.repo);
+    // Deck is built FOR the requesting user — concealed projects never
+    // reach the export (ADR-005).
+    const data = await buildDeckData(req.app.locals.repo, req.user);
     const buffer = await buildExecutiveDeck(data, format);
     res
       .status(200)

@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { useApp } from "@/lib/store";
 import { cn, divisionMeta } from "@/lib/utils";
 import type { Project } from "@/lib/types";
-import { ProjectStatusBadge, SecurityGateBadge, TagChip } from "./Badges";
+import { ClassificationBadge, ProjectStatusBadge, SecurityGateBadge, TagChip } from "./Badges";
 import { ChevronRightIcon } from "./Icons";
 
 export default function ProjectCard({ project, showTags = false }: { project: Project; showTags?: boolean }) {
@@ -44,6 +44,7 @@ export default function ProjectCard({ project, showTags = false }: { project: Pr
 
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
         <ProjectStatusBadge status={project.overallStatus} />
+        <ClassificationBadge classification={project.classification} />
         <SecurityGateBadge status={project.securityGateStatus} />
         {showTags && project.strategicTag && <TagChip tag={project.strategicTag} tone="indigo" />}
         {showTags && project.cgeitTag && <TagChip tag={project.cgeitTag} tone="violet" />}

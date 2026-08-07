@@ -1,14 +1,22 @@
 import { Router } from 'express';
 import { asyncHandler } from './middleware.js';
 import { applyApprovalDecision } from '../services/securityRouting.js';
+import { readableProjectIds } from '../services/policy.js';
 
 export function approvalsRouter() {
   const router = Router();
 
   /** GET /api/approvals?status=pending — InfoSec queue. */
   router.get('/', asyncHandler(async (req, res) => {
+    const repo = req.app.locals.repo;
     const filter = req.query.status ? { status: req.query.status } : {};
-    res.json(await req.app.locals.repo.list('approval', filter));
+    const [approvals, projects] = await Promise.all([
+      repo.list('approval', filter),
+      repo.list('project'),
+    ]);
+    // ADR-005: approvals of concealed projects are absent from the queue.
+    const visible = readableProjectIds(req.user, projects);
+    res.json(approvals.filter((a) => visible.has(a.projectId)));
   }));
 
   /** POST /api/approvals/:id/decision — security_reviewer only. */

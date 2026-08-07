@@ -7,6 +7,7 @@
 import PptxGenJS from 'pptxgenjs';
 import PDFDocument from 'pdfkit';
 import { computeLocked } from '../services/gates.js';
+import { filterReadableProjects } from '../services/policy.js';
 
 const ACTIVE_STATUSES = ['active', 'at_risk', 'on_hold'];
 const SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -30,14 +31,20 @@ function groupByProject(rows) {
   return byProject;
 }
 
-/** Collects and groups everything the deck needs. Pure data, testable. */
-export async function buildDeckData(repo) {
-  const [allDivisions, projects, tasks, roadblocks] = await Promise.all([
+/**
+ * Collects and groups everything the deck needs. Pure data, testable.
+ * `forUser` is the REQUESTING user: projects concealed from them (ADR-005
+ * classification) are excluded from the deck — and so are their tasks and
+ * roadblocks, because everything below is grouped under the project.
+ */
+export async function buildDeckData(repo, forUser) {
+  const [allDivisions, allProjects, tasks, roadblocks] = await Promise.all([
     repo.listDivisions(),
     repo.list('project'),
     repo.list('task'),
     repo.list('roadblock'),
   ]);
+  const projects = filterReadableProjects(forUser, allProjects);
   const tasksById = new Map(tasks.map((t) => [t.id, t]));
   const tasksByProject = groupByProject(tasks);
   const roadblocksByProject = groupByProject(roadblocks);
@@ -207,7 +214,9 @@ async function buildPptx(data) {
 // ---------------------------------------------------------------------------
 function buildPdf(data) {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 48 });
+    // compress:false keeps content streams plaintext so exports stay
+    // text-auditable (classification leak scans assert on raw bytes).
+    const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 48, compress: false });
     const chunks = [];
     doc.on('data', (c) => chunks.push(c));
     doc.on('end', () => resolve(Buffer.concat(chunks)));

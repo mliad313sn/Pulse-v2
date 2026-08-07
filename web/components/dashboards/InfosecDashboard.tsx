@@ -6,10 +6,9 @@ import { useApp } from "@/lib/store";
 import ApprovalsQueue from "@/components/ApprovalsQueue";
 import ProjectCard from "@/components/ProjectCard";
 import { PageHeader, SectionHeader } from "@/components/Headings";
-import { canDecideApprovals } from "@/lib/utils";
 
 export default function InfosecDashboard() {
-  const { projects, user } = useApp();
+  const { projects, canDecide } = useApp();
   const gated = projects.filter((p) => p.securityGateStatus !== "not_required");
 
   return (
@@ -19,7 +18,7 @@ export default function InfosecDashboard() {
         subtitle="Network-altering work routes here for approval before it can progress."
       />
 
-      <ApprovalsQueue canDecide={canDecideApprovals(user)} />
+      <ApprovalsQueue canDecide={canDecide} />
 
       {gated.length > 0 && (
         <section className="mt-10">

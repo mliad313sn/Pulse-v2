@@ -6,6 +6,7 @@
 import { ApiError, validation } from '../errors.js';
 import { applyUpdate } from './occ.js';
 import { ENTITY_DEFS, assertEnums, createEntity, pickWritable, runTaskGates } from './entityOps.js';
+import { canReadProject } from './policy.js';
 import { ensureSecurityRouting } from './securityRouting.js';
 
 const ENTITIES = ['task', 'project', 'roadblock'];
@@ -88,7 +89,12 @@ async function processOperation(repo, user, op) {
 
   if (op.op === 'update') {
     const current = await repo.get(kind, op.entityId);
-    if (!current) {
+    // Concealment (ADR-005): entities of unreadable projects reject exactly
+    // like missing ids — sync results must not leak their existence.
+    const scopeProject = current
+      ? (kind === 'project' ? current : await repo.get('project', current.projectId))
+      : null;
+    if (!current || (scopeProject && !canReadProject(user, scopeProject))) {
       return { result: 'rejected', entityId: op.entityId ?? null, error: 'NOT_FOUND', serverState: null };
     }
 

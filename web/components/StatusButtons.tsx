@@ -14,7 +14,9 @@ const ACTIVE_STYLES: Record<TaskStatus, string> = {
 
 /** Quick one-tap status switcher. Every target is >= 44px tall (touch friendly). */
 export default function StatusButtons({ task, onDone }: { task: Task; onDone?: () => void }) {
-  const { moveTask, lockedMessage } = useApp();
+  const { moveTask, lockedMessage, canWrite } = useApp();
+
+  if (!canWrite) return null; // VIEWER: no write affordances (server enforces too)
 
   return (
     <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">

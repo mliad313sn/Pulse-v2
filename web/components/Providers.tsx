@@ -5,12 +5,13 @@ import { ToastProvider } from "./Toast";
 import { AppProvider, useApp } from "@/lib/store";
 import Header from "./Header";
 import SWRegister from "./SWRegister";
-import PersonaPicker from "./PersonaPicker";
+import LoginScreen from "./LoginScreen";
+import ChangePasswordScreen from "./ChangePasswordScreen";
 import RoadblockSheet from "./RoadblockSheet";
 import { Skeleton, SkeletonList } from "./Skeleton";
 
 function Shell({ children }: { children: ReactNode }) {
-  const { ready, user } = useApp();
+  const { ready, user, mustChangePassword, changePasswordOpen } = useApp();
 
   if (!ready) {
     return (
@@ -22,7 +23,12 @@ function Shell({ children }: { children: ReactNode }) {
   }
 
   if (!user) {
-    return <PersonaPicker />;
+    return <LoginScreen />;
+  }
+
+  // Forced (mustChangePassword) or voluntary (user menu) — both block the app.
+  if (mustChangePassword || changePasswordOpen) {
+    return <ChangePasswordScreen />;
   }
 
   return (

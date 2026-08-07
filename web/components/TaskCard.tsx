@@ -32,7 +32,7 @@ export default function TaskCard({
   onSelect,
   dragProps,
 }: Props) {
-  const { projects, lockedMessage, openRoadblock } = useApp();
+  const { projects, lockedMessage, openRoadblock, canWrite } = useApp();
   const [expanded, setExpanded] = useState(mode === "zen");
   const board = variant === "board";
   const project = board ? null : projects.find((p) => p.id === task.projectId);
@@ -53,14 +53,17 @@ export default function TaskCard({
       title={
         locked
           ? lockedMessage(task)
-          : board
+          : board && canWrite
             ? "Drag to a column, or tap then tap a column's Move here button"
             : undefined
       }
       className={cn(
         "rounded-2xl border border-slate-200 bg-white transition dark:border-slate-700 dark:bg-slate-800",
         board
-          ? "cursor-grab select-none p-3.5 hover:border-slate-300 active:cursor-grabbing dark:hover:border-slate-500"
+          ? cn(
+              "select-none p-3.5 hover:border-slate-300 dark:hover:border-slate-500",
+              canWrite && "cursor-grab active:cursor-grabbing",
+            )
           : "p-4",
         !board && mode === "expand" && "cursor-pointer hover:border-slate-300 dark:hover:border-slate-500",
         locked && "opacity-60",
@@ -121,7 +124,7 @@ export default function TaskCard({
         {task.site && <span>{task.site}</span>}
       </div>
 
-      {expanded && (
+      {expanded && canWrite && (
         <div className={cn(board ? "mt-3 space-y-2" : "mt-4 space-y-3")} onClick={(e) => e.stopPropagation()}>
           <StatusButtons task={task} onDone={board ? () => setExpanded(false) : undefined} />
           <LogRoadblockButton onClick={() => openRoadblock({ projectId: task.projectId, task })} />

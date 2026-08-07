@@ -12,8 +12,27 @@ export class ApiError extends Error {
   }
 }
 
-export const unauthenticated = () =>
-  new ApiError(401, 'UNAUTHENTICATED', 'Missing or unknown x-user-id header');
+export const authRequired = () =>
+  new ApiError(401, 'AUTH_REQUIRED', 'Missing, invalid or expired session');
+
+/** Uniform login failure — identical for unknown email and wrong password (no enumeration). */
+export const authFailed = () =>
+  new ApiError(401, 'AUTH_FAILED', 'Invalid email or password');
+
+export const accountLocked = (retryAfterSeconds) =>
+  new ApiError(423, 'ACCOUNT_LOCKED', 'Account temporarily locked after repeated failures', { retryAfterSeconds });
+
+export const accountDisabled = () =>
+  new ApiError(403, 'ACCOUNT_DISABLED', 'This account has been deactivated');
+
+export const rateLimited = () =>
+  new ApiError(429, 'RATE_LIMITED', 'Too many attempts, slow down');
+
+export const passwordChangeRequired = () =>
+  new ApiError(403, 'PASSWORD_CHANGE_REQUIRED', 'Password change required before using the API');
+
+export const notConfigured = (message = 'This provider is not configured') =>
+  new ApiError(501, 'NOT_CONFIGURED', message);
 
 export const forbidden = (message = 'Role not allowed for this operation') =>
   new ApiError(403, 'FORBIDDEN', message);

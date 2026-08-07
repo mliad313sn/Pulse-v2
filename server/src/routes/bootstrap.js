@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { asyncHandler } from './middleware.js';
 import { withLocked } from './helpers.js';
+import { filterReadableProjects, readableProjectIds } from '../services/policy.js';
+import { publicUser } from '../services/auth.js';
 
 /** GET /api/bootstrap — everything the client caches into IndexedDB. */
 export function bootstrapRouter() {
@@ -13,12 +15,16 @@ export function bootstrapRouter() {
       repo.list('roadblock'),
       repo.list('approval'),
     ]);
+    // ADR-005: concealed projects (and their children) never reach the client cache.
+    const visibleProjects = filterReadableProjects(req.user, projects);
+    const visible = readableProjectIds(req.user, projects);
+    const visibleTasks = tasks.filter((t) => visible.has(t.projectId));
     res.json({
-      user: req.user,
-      projects,
-      tasks: await withLocked(repo, tasks, { tasks, projects }),
-      roadblocks,
-      approvals,
+      user: publicUser(req.user),
+      projects: visibleProjects,
+      tasks: await withLocked(repo, visibleTasks, { tasks, projects }),
+      roadblocks: roadblocks.filter((r) => visible.has(r.projectId)),
+      approvals: approvals.filter((a) => visible.has(a.projectId)),
       serverTime: new Date().toISOString(),
     });
   }));

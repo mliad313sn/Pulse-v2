@@ -155,6 +155,43 @@ export function ClockIcon({ className }: IconProps) {
   );
 }
 
+export function EyeIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="M2.5 12S6 5.8 12 5.8 21.5 12 21.5 12 18 18.2 12 18.2 2.5 12 2.5 12z" />
+      <circle cx="12" cy="12" r="2.8" />
+    </svg>
+  );
+}
+
+export function EyeOffIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="M4 4l16 16" />
+      <path d="M9.9 5.2A9.7 9.7 0 0 1 12 5.8c6 0 9.5 6.2 9.5 6.2a17.6 17.6 0 0 1-3.2 3.7M6 7.2A16.7 16.7 0 0 0 2.5 12S6 18.2 12 18.2c1 0 2-.2 2.8-.5" />
+      <path d="M9.6 9.7a2.8 2.8 0 0 0 4 4" />
+    </svg>
+  );
+}
+
+export function KeyIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <circle cx="8" cy="15.5" r="3.8" />
+      <path d="M10.8 12.7 19.5 4M15.5 8l3 3M13 10.5l2 2" />
+    </svg>
+  );
+}
+
+export function LogoutIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="M14.5 8V5.5h-9v13h9V16" />
+      <path d="M9.5 12h11m0 0-3-3m3 3-3 3" />
+    </svg>
+  );
+}
+
 export function MergeIcon({ className }: IconProps) {
   return (
     <svg {...base(className)}>

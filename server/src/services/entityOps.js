@@ -3,9 +3,10 @@
  * offline sync processor, so business rules live in exactly one place.
  */
 import { randomUUID } from 'node:crypto';
-import { notFound, validation, versionConflict } from '../errors.js';
+import { forbidden, notFound, validation, versionConflict } from '../errors.js';
 import { assertCanAdvance } from './gates.js';
 import { applyUpdate } from './occ.js';
+import { CLASSIFICATIONS, canReadProject, canSetClassification } from './policy.js';
 import { ensureSecurityRouting } from './securityRouting.js';
 import { nowIso } from './time.js';
 
@@ -14,7 +15,7 @@ export const ENTITY_DEFS = {
     required: ['name', 'division'],
     writable: [
       'name', 'description', 'division', 'site', 'cgeitTag', 'strategicTag',
-      'riskTags', 'overallStatus', 'ownerId',
+      'riskTags', 'classification', 'overallStatus', 'ownerId',
     ],
     defaults: () => ({
       description: null,
@@ -22,12 +23,14 @@ export const ENTITY_DEFS = {
       cgeitTag: 'value_delivery',
       strategicTag: null,
       riskTags: [],
+      classification: 'internal',
       overallStatus: 'active',
       securityGateStatus: 'not_required',
       ownerId: null,
     }),
     enums: {
       cgeitTag: ['strategic_alignment', 'value_delivery', 'risk_optimization', 'resource_optimization', 'performance_measurement'],
+      classification: CLASSIFICATIONS,
       overallStatus: ['draft', 'active', 'at_risk', 'on_hold', 'complete'],
     },
   },
@@ -109,9 +112,17 @@ export async function createEntity(repo, actor, kind, payload, options = {}) {
 
   if (def.parentRef) {
     const parent = await repo.get('project', fields[def.parentRef]);
-    if (!parent) {
+    // Concealment (ADR-005): a parent project the actor may not read yields
+    // the SAME error as a truly unknown id — existence must not leak.
+    if (!parent || !canReadProject(actor, parent)) {
       throw validation(`Unknown ${def.parentRef}: ${fields[def.parentRef]}`, { field: def.parentRef });
     }
+  }
+
+  // Classification: only ADMIN may set it at create; anyone else gets the
+  // forced default 'internal' (ADR-005).
+  if (kind === 'project' && fields.classification !== undefined && !canSetClassification(actor)) {
+    delete fields.classification;
   }
   for (const [field, actorProp] of Object.entries(def.actorDefaults ?? {})) {
     if (fields[field] === undefined) fields[field] = actor?.[actorProp] ?? null;
@@ -147,12 +158,25 @@ export async function patchEntity(repo, actor, kind, id, body) {
   const current = await repo.get(kind, id);
   if (!current) throw notFound(`${kind} ${id} not found`);
 
+  // Concealment (ADR-005): writes against entities of unreadable projects
+  // 404 exactly like a missing id.
+  const scopeProject = kind === 'project' ? current : await repo.get('project', current.projectId);
+  if (scopeProject && !canReadProject(actor, scopeProject)) {
+    throw notFound(`${kind} ${id} not found`);
+  }
+
   if (typeof body?.version !== 'number' || !Number.isInteger(body.version)) {
     throw validation('Body must include the integer base `version` for OCC');
   }
 
   const fields = pickWritable(def, body);
   assertEnums(def, fields);
+
+  // Only ADMIN may change a project's classification (403 otherwise).
+  if (kind === 'project' && fields.classification !== undefined
+      && fields.classification !== current.classification && !canSetClassification(actor)) {
+    throw forbidden('Only ADMIN may set or change a project classification');
+  }
   if (Object.keys(fields).length === 0) {
     throw validation('No writable fields in payload');
   }
