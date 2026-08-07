@@ -1,14 +1,19 @@
 // Hand-rolled IndexedDB wrapper (no libraries).
-// Stores: projects, tasks, roadblocks, approvals, users, outbox, conflicts, meta,
-// pillars, portfolios, programs, members, milestones, workstreams, dependencies.
+// Stores: projects, tasks, roadblocks, approvals, users, outbox, conflicts
+// (legacy), blocked, meta, pillars, portfolios, programs, members, milestones,
+// workstreams, dependencies, updates.
 
 const DB_NAME = "opspm360";
 // v2: added pillars/portfolios/programs/members (Wave 1 slice 2).
 // v3: added milestones (Wave 2 governance).
 // v4: added workstreams + dependencies (Wave 3 planning).
-// v5: added updates (Wave 3 RAG health + project updates). onupgradeneeded only
-// creates stores that are missing, so upgrades from any prior version are safe.
-const DB_VERSION = 5;
+// v5: added updates (Wave 3 RAG health + project updates).
+// v6: added blocked (Wave 3 offline-queue rework, ADR-003 — halt-on-failure
+// sync). The legacy `conflicts` store is kept (empty after the one-shot boot
+// migration in lib/sync.ts) so downgrades/old rows never break the upgrade.
+// onupgradeneeded only creates stores that are missing, so upgrades from any
+// prior version are safe.
+const DB_VERSION = 6;
 
 export type StoreName =
   | "projects"
@@ -18,6 +23,7 @@ export type StoreName =
   | "users"
   | "outbox"
   | "conflicts"
+  | "blocked"
   | "meta"
   | "pillars"
   | "portfolios"
@@ -36,6 +42,7 @@ const STORE_KEYS: Record<StoreName, string> = {
   users: "id",
   outbox: "opId",
   conflicts: "opId",
+  blocked: "opId",
   meta: "key",
   pillars: "id",
   portfolios: "id",

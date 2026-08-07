@@ -162,13 +162,13 @@ describe('E13 — project updates (append-only)', () => {
         body: {
           clientId: 'upd-device',
           operations: [{
-            opId: 'u1', entity: 'projectUpdate', op: 'create',
+            opId: 'u1', seq: 1, entity: 'projectUpdate', op: 'create',
             fields: { projectId: SEED.project2, mood: 'NEUTRAL', text: 'offline pulse' },
           }],
         },
       });
-      assert.equal(res.status, 200); // batch envelope; the op itself is rejected
-      assert.equal(res.body.results[0].result, 'rejected');
+      assert.equal(res.status, 200); // batch envelope; the op itself is blocked
+      assert.equal(res.body.results[0].result, 'blocked');
       assert.equal(res.body.results[0].error, 'VALIDATION');
     });
   });

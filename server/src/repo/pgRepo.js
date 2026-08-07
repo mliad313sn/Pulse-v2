@@ -567,6 +567,25 @@ class PgQueries {
       [id, result, JSON.stringify(detail ?? null)],
     );
   }
+
+  /**
+   * E25/E26 replay idempotency: the most recent op of this client+opId that
+   * already APPLIED (blocked/held attempts stay retryable). Null when none.
+   */
+  async findAppliedSyncOp(clientId, opId) {
+    const { rows } = await this._query(
+      `SELECT id, client_id, payload, result, detail FROM sync_queue
+        WHERE client_id = $1 AND payload->>'opId' = $2 AND result = 'applied'
+        ORDER BY id DESC LIMIT 1`,
+      [clientId, opId],
+    );
+    if (rows.length === 0) return null;
+    const r = rows[0];
+    return {
+      id: Number(r.id), clientId: r.client_id, payload: r.payload,
+      result: r.result, detail: r.detail,
+    };
+  }
 }
 
 class PgTxRepo extends PgQueries {

@@ -195,12 +195,12 @@ describe('E08 — milestones + computed progress', () => {
           clientId: 'ms-device',
           operations: [
             {
-              opId: 'ms-create', entity: 'milestone', op: 'create',
+              opId: 'ms-create', seq: 1, entity: 'milestone', op: 'create',
               entityId: '77777777-0000-0000-0000-000000000001',
               fields: { projectId: SEED.project2, title: 'WAN failover drill', weight: 2 },
             },
             {
-              opId: 'ms-update', entity: 'milestone', op: 'update',
+              opId: 'ms-update', seq: 2, entity: 'milestone', op: 'update',
               entityId: '77777777-0000-0000-0000-000000000001',
               baseVersion: 1, clientUpdatedAt: new Date().toISOString(),
               fields: { status: 'IN_PROGRESS' },

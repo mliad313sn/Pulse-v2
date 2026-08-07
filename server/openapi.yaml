@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: OpsPM360 API
-  version: "1.4.0"
+  version: "1.5.0"
   description: |
     Offline-first project portfolio management for multi-site mining IT operations.
     Auth: server-side sessions — POST /auth/login sets the HttpOnly `ppm_session`
@@ -30,6 +30,14 @@ info:
     override (manage-level, reason >=30 chars, audited, MANUAL badge),
     change-based rag_snapshots trend history, and APPEND-ONLY project updates
     (POST + GET only; the freshness source; online-only — not a sync entity).
+    E25/E26 (ADR-003 executed): the offline sync batch is an ORDERED command
+    log (client-assigned integer seq, ascending processing, batch-level 400 on
+    missing/duplicate seq). Strict OCC is the ONLY conflict behavior — the
+    Last-Write-Wins path is deleted; any stale baseVersion is a conflict.
+    Outcomes: applied | blocked (first failure, halts the batch; serverState
+    on VERSION_CONFLICT) | held (later ops, untouched). Halts audit ONE
+    SYNC_HALTED event; POST /sync/discard records an explicit audited
+    SYNC_DISCARDED resolution.
 servers:
   - url: http://localhost:4000/api
 tags:
@@ -1475,7 +1483,15 @@ paths:
   /sync:
     post:
       tags: [sync]
-      summary: Offline batch sync (OCC + LWW + governance gates)
+      summary: Offline batch sync (ordered command log; strict OCC — no LWW; halt on first failure)
+      description: |
+        Operations are processed strictly in ascending client-assigned `seq`
+        order. The first failing op is `blocked` ({error, message,
+        serverState?}) and every later op is `held` (untouched, not
+        validated). Any stale baseVersion is a VERSION_CONFLICT — the machine
+        never merges. Duplicate replays of applied ops are idempotent no-ops.
+        A halted batch writes one SYNC_HALTED audit event. Missing/duplicate
+        seq refuses the whole batch (400).
       requestBody:
         required: true
         content:
@@ -1483,10 +1499,34 @@ paths:
             schema: { $ref: "#/components/schemas/SyncRequest" }
       responses:
         "200":
-          description: Per-operation results
+          description: Per-operation results in seq order, plus haltedAt
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SyncResponse" }
+        "400": { $ref: "#/components/responses/Validation" }
+
+  /sync/discard:
+    post:
+      tags: [sync]
+      summary: Record an explicit, audited discard of a queued offline op (SYNC_DISCARDED)
+      description: |
+        The op itself lives client-side; this endpoint is the server-side
+        audit trail plan §57 requires for the human "discard" resolution of a
+        halted queue. Attributed to the session user.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [opId, entity, entityId]
+              properties:
+                opId: { type: string, description: Client-generated op id being discarded }
+                entity: { type: string }
+                entityId: { type: string }
+                reason: { type: string, nullable: true }
+      responses:
+        "204": { description: Discard recorded (audited) }
         "400": { $ref: "#/components/responses/Validation" }
 
   /reports/executive-deck:
@@ -2247,14 +2287,17 @@ components:
 
     SyncOperation:
       type: object
-      required: [opId, entity, op]
+      required: [opId, seq, entity, op]
       properties:
-        opId: { type: string, format: uuid, description: Client-generated }
+        opId: { type: string, format: uuid, description: Client-generated; replays of an applied opId are idempotent no-ops }
+        seq:
+          type: integer
+          description: Client-assigned strict ordering; the batch is processed in ascending seq (missing/duplicate seq -> whole batch 400)
         entity: { type: string, enum: [task, project, roadblock, milestone, workstream] }
         entityId: { type: string, format: uuid }
         op: { type: string, enum: [update, create] }
-        baseVersion: { type: integer }
-        clientUpdatedAt: { type: string, format: date-time }
+        baseVersion: { type: integer, description: ANY mismatch with the server version is a conflict (no LWW) }
+        clientUpdatedAt: { type: string, format: date-time, description: Recorded for diagnostics only — never used for conflict resolution }
         fields: { type: object }
 
     SyncRequest:
@@ -2270,17 +2313,25 @@ components:
       type: object
       properties:
         opId: { type: string, nullable: true }
-        result: { type: string, enum: [applied, lww_applied, conflict_manual, rejected] }
+        seq: { type: integer }
+        result:
+          type: string
+          enum: [applied, blocked, held]
+          description: blocked = the FIRST failing op (halts the batch); held = later ops, untouched and unvalidated
         entity: { type: string, nullable: true }
         entityId: { type: string, nullable: true }
         serverState:
           type: object
           nullable: true
-          description: Current server entity — set on conflict_manual (and on gate-rejected updates when available)
+          description: Current server entity on VERSION_CONFLICT so the human can compare/reapply; NEVER present on concealed NOT_FOUND
         error:
           type: string
           nullable: true
-          description: NOT_FOUND | DEPENDENCY_LOCKED | SECURITY_GATE | VALIDATION when rejected
+          description: VERSION_CONFLICT | NOT_FOUND | FORBIDDEN | VALIDATION | DEPENDENCY_LOCKED | SECURITY_GATE when blocked
+        message:
+          type: string
+          nullable: true
+          description: Human-readable failure explanation when blocked
 
     SyncResponse:
       type: object
@@ -2288,4 +2339,8 @@ components:
         results:
           type: array
           items: { $ref: "#/components/schemas/SyncResult" }
+        haltedAt:
+          type: string
+          nullable: true
+          description: opId of the blocked op the batch halted at, or null when nothing blocked
         serverTime: { type: string, format: date-time }

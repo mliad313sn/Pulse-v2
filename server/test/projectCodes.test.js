@@ -78,21 +78,21 @@ describe('E04 — project code generation', () => {
     assert.equal(echo.body.description, 'echo patch ok');
   });
 
-  it('sync updates cannot change the code either (rejected VALIDATION)', async () => {
+  it('sync updates cannot change the code either (blocked VALIDATION)', async () => {
     const current = await srv.api('GET', `/api/projects/${SEED.project2}`, { user: USERS.moussa });
     const res = await srv.api('POST', '/api/sync', {
       user: USERS.moussa,
       body: {
         clientId: 'code-forger',
         operations: [{
-          opId: 'op-1', entity: 'project', entityId: SEED.project2, op: 'update',
+          opId: 'op-1', seq: 1, entity: 'project', entityId: SEED.project2, op: 'update',
           baseVersion: current.body.version, clientUpdatedAt: new Date().toISOString(),
           fields: { code: 'PRJ-2020-001' },
         }],
       },
     });
     assert.equal(res.status, 200);
-    assert.equal(res.body.results[0].result, 'rejected');
+    assert.equal(res.body.results[0].result, 'blocked');
     assert.equal(res.body.results[0].error, 'VALIDATION');
   });
 });

@@ -1,4 +1,4 @@
-# OpsPM360 — API Contract (v6 — computed RAG health + manual override, project updates)
+# OpsPM360 — API Contract (v7 — offline sync rework: ordered command log, halt-on-first-failure, NO LWW)
 
 Shared contract between `server/` (Node.js/Express) and `web/` (Next.js PWA).
 Both sides MUST conform to this document. Base URL: `http://localhost:4000/api`.
@@ -430,7 +430,7 @@ manual (bool), explanation}` — the slide's headline health marker (RAG color
 | 501  | `NOT_CONFIGURED`     | SSO endpoints without Entra env configuration               |
 | 403  | `FORBIDDEN`          | role/privilege not allowed (incl. every VIEWER write)       |
 | 404  | `NOT_FOUND`          | entity missing OR concealed by classification               |
-| 409  | `VERSION_CONFLICT`   | OCC mismatch on direct (online) update                      |
+| 409  | `VERSION_CONFLICT`   | OCC mismatch on direct (online) update; also the `error` of a sync op `blocked` on a stale `baseVersion` (no LWW) |
 | 409  | `DUPLICATE`          | identical dependency edge (predecessor, successor, type) already exists |
 | 423  | `DEPENDENCY_LOCKED`  | task advance blocked by incomplete prerequisite (`dependencyLock` or FS predecessor; `detail.blockingPredecessorIds`) |
 | 423  | `SECURITY_GATE`      | task advance blocked by pending InfoSec approval            |
@@ -503,15 +503,18 @@ version, updatedAt, createdAt.
 | `GET /api/approvals?status=pending` | InfoSec queue (classification-filtered) |
 | `POST /api/approvals/:id/decision` | body `{ decision: "approved"\|"rejected", notes? }`; requires the `security_reviewer` privilege; recomputes project securityGateStatus |
 | `GET /api/audit?entityId=` | read-only audit trail (entries of concealed projects filtered) |
-| `POST /api/sync` | offline batch — see below; ops against concealed entities reject as NOT_FOUND |
+| `POST /api/sync` | offline batch (ordered command log, halt-on-first-failure) — see below; ops against concealed entities block as NOT_FOUND without serverState |
+| `POST /api/sync/discard` | `{opId, entity, entityId, reason?}` → `204` — explicit, audited server-side record (`SYNC_DISCARDED`) of a human discarding a queued offline op; see below |
 | `GET /api/reports/executive-deck?format=pptx\|pdf` | binary download; built FOR the requesting user (concealed projects excluded) |
 | `GET /api/health` | `{ ok: true }` (public) |
 
-## Offline sync protocol (`POST /api/sync`)
-Request:
+## Offline sync protocol (`POST /api/sync`) — v7, ADR-003 executed (plan §57/§58)
+
+The client queue is an **ordered command log**. Request:
 ```json
 { "clientId": "device-uuid", "operations": [ {
     "opId": "client-generated-uuid",
+    "seq": 1,
     "entity": "task" | "project" | "roadblock" | "milestone" | "workstream",
     "entityId": "uuid",
     "op": "update" | "create",
@@ -520,23 +523,60 @@ Request:
     "fields": { "status": "done" }
 } ] }
 ```
-Server behavior per operation (each is queued into `sync_queue`, then processed):
-1. `create` → insert, result `applied`.
-2. `update` with `baseVersion === server.version` → apply, `version+1`, result `applied`.
-3. `baseVersion < server.version` (concurrent edit) → **Last-Write-Wins** on
-   `clientUpdatedAt` vs server `updatedAt`:
-   - client newer → apply fields, `version = server.version + 1`, result `lww_applied`.
-   - server newer → do NOT apply; result `conflict_manual`; response includes
-     `serverState` so the client can offer a manual merge to the project owner.
-4. Gate violations (dependency/security) during sync → result `rejected` with
-   the same error codes as PATCH.
+
+- **`seq`** (integer, client-assigned) strictly orders the batch. Operations
+  are processed in **ascending seq order** regardless of array order. A batch
+  with a missing, non-integer, or duplicated `seq` is refused wholesale —
+  `400 VALIDATION`, nothing queued, nothing applied.
+- `clientUpdatedAt` is recorded for diagnostics only — it has **no effect on
+  conflict resolution** (the LWW path is deleted).
+
+Per-operation outcomes (`applied` | `blocked` | `held`):
+1. **`applied`** — version-match update (`baseVersion === server.version` →
+   apply, `version+1`) or idempotent create (an existing `entityId` replays as
+   a no-op `applied`). A duplicate replay of an already-**applied**
+   `clientId`+`opId` (network loss, crash before the response landed) is a
+   no-op `applied` — the command log is idempotent under replay.
+2. **`blocked`** — the FIRST op that fails for ANY reason: **stale version
+   (NO Last-Write-Wins, EVER — any `baseVersion` mismatch is a conflict →
+   `VERSION_CONFLICT`)**, gate violation (`DEPENDENCY_LOCKED`/`SECURITY_GATE`),
+   validation (`VALIDATION`), authorization change while offline (`FORBIDDEN`),
+   missing target (`NOT_FOUND`). The row carries `{error, message,
+   serverState?}` — `serverState` is the current entity on `VERSION_CONFLICT`
+   so the human can compare/reapply. Concealment rules still apply: ops
+   against entities of unreadable projects block as `NOT_FOUND` with **NO
+   serverState**, indistinguishable from truly missing ids.
+3. **`held`** — every op after the blocked one: untouched, **not validated**,
+   returned so the client keeps it queued for the next replay.
+
+Processing **stops at the first blocked op** (invariant 19). A batch with no
+failures applies fully, as before. Every op is recorded into `sync_queue` with
+its outcome; a halted batch additionally writes ONE audit event
+**`SYNC_HALTED {clientId, opId, error}`** (actor = the syncing user per §172,
+flagged `source: "sync"`; admin notification proper arrives with E19). A
+`blocked` op is retryable with the same `opId` after the client fixes it
+(typically by rebasing `baseVersion` onto the returned `serverState`).
 
 Response:
 ```json
-{ "results": [ { "opId": "...", "result": "applied|lww_applied|conflict_manual|rejected",
-                 "entity": "task", "entityId": "...", "serverState": { }, "error": null } ],
+{ "results": [ { "opId": "...", "seq": 1, "result": "applied|blocked|held",
+                 "entity": "task", "entityId": "...", "serverState": { },
+                 "error": null, "message": null } ],
+  "haltedAt": "opId-of-the-blocked-op | null",
   "serverTime": "..." }
 ```
+
+### Explicit discard (`POST /api/sync/discard`)
+
+Human resolution of a halted queue is **retry / inspect / discard** (§57).
+Retrying is a resend; discarding is client-side (the op never applied here) —
+but it must be **explicit and auditable server-side**:
+
+`POST /api/sync/discard` `{opId, entity, entityId, reason?}` → `204`. Records
+an append-only **`SYNC_DISCARDED`** audit event attributed to the session
+user (`source: "sync"`, plus the target's `projectId` when resolvable so the
+audit read path applies concealment filtering). Missing/blank `opId`,
+`entity`, or `entityId` → `400 VALIDATION`. VIEWER → `403` (global rule).
 
 ## Scoping summary
 - **Hard walls** (server-enforced): VIEWER read-only; ADMIN-only user
@@ -573,3 +613,6 @@ Response:
 15. Project `rag` is computed (worst active signal wins, every signal explained); the ONLY stored health inputs are the domain rows themselves plus the manual override — which demands a ≥30-char reason, a manage-level actor, and permanent audit of reason + before/after color.
 16. Project updates are **append-only** (no PATCH/DELETE routes; DB trigger backstop) and always attributed to the session user.
 17. `rag_snapshots` history is change-based and never fabricated/backfilled.
+18. **Concurrent updates never silently overwrite newer versions** (plan invariant 18): strict OCC is the ONLY behavior, online (409) and offline (`blocked` VERSION_CONFLICT) — the LWW path is deleted.
+19. **Offline sync preserves client order and stops at the first refused/conflicting op** (plan invariant 19): ascending `seq`, first failure `blocked`, everything after `held` untouched, `SYNC_HALTED` audited.
+20. **The machine never invents a conflict resolution** (plan invariant 20): every conflict goes to human retry/inspect/discard, and a discard is an explicit, audited act (`SYNC_DISCARDED`).

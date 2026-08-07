@@ -10,12 +10,11 @@ const base = () => ({
   updatedAt: '2026-08-01T12:00:00.000Z',
 });
 
-describe('OCC applyUpdate matrix', () => {
+describe('OCC applyUpdate matrix (strict-only — ADR-003 executed, no LWW)', () => {
   it('baseVersion === version -> applied, version+1, fields merged', () => {
     const current = base();
     const { outcome, next } = applyUpdate(current, {
       baseVersion: 3,
-      clientUpdatedAt: '2026-08-01T13:00:00.000Z',
       fields: { status: 'done' },
     });
     assert.equal(outcome, 'applied');
@@ -27,56 +26,50 @@ describe('OCC applyUpdate matrix', () => {
     assert.equal(current.status, 'todo');
   });
 
-  it('stale baseVersion + newer clientUpdatedAt -> lww_applied with version = server+1', () => {
-    const { outcome, next } = applyUpdate(base(), {
-      baseVersion: 1,
-      clientUpdatedAt: '2026-08-02T09:00:00.000Z', // newer than server updatedAt
-      fields: { priority: 'high' },
-    });
-    assert.equal(outcome, 'lww_applied');
-    assert.equal(next.version, 4);
-    assert.equal(next.priority, 'high');
-  });
-
-  it('stale baseVersion + older clientUpdatedAt -> conflict_manual, unchanged', () => {
+  it('stale baseVersion -> conflict, unchanged — even with a NEWER client timestamp (the LWW branch is gone)', () => {
     const current = base();
     const { outcome, next } = applyUpdate(current, {
       baseVersion: 1,
-      clientUpdatedAt: '2026-07-01T09:00:00.000Z', // older than server updatedAt
-      fields: { priority: 'low' },
+      // Formerly the lww_applied case; clientUpdatedAt no longer exists in the
+      // OCC contract and any extra property is simply ignored.
+      clientUpdatedAt: '2026-08-02T09:00:00.000Z',
+      fields: { priority: 'high' },
     });
-    assert.equal(outcome, 'conflict_manual');
+    assert.equal(outcome, 'conflict');
     assert.deepEqual(next, current);
   });
 
-  it('stale baseVersion + equal clientUpdatedAt -> server wins (conflict_manual)', () => {
+  it('stale baseVersion + older client timestamp -> conflict, unchanged', () => {
+    const current = base();
+    const { outcome, next } = applyUpdate(current, {
+      baseVersion: 1,
+      clientUpdatedAt: '2026-07-01T09:00:00.000Z',
+      fields: { priority: 'low' },
+    });
+    assert.equal(outcome, 'conflict');
+    assert.deepEqual(next, current);
+  });
+
+  it('stale baseVersion one behind -> conflict (no timestamp can rescue it)', () => {
     const { outcome } = applyUpdate(base(), {
       baseVersion: 2,
       clientUpdatedAt: '2026-08-01T12:00:00.000Z',
       fields: { priority: 'low' },
     });
-    assert.equal(outcome, 'conflict_manual');
+    assert.equal(outcome, 'conflict');
   });
 
-  it('stale baseVersion + missing/garbage clientUpdatedAt -> conflict_manual', () => {
-    assert.equal(applyUpdate(base(), { baseVersion: 1, fields: {} }).outcome, 'conflict_manual');
-    assert.equal(
-      applyUpdate(base(), { baseVersion: 1, clientUpdatedAt: 'not-a-date', fields: {} }).outcome,
-      'conflict_manual',
-    );
-  });
-
-  it('baseVersion ahead of server -> conflict_manual', () => {
+  it('baseVersion ahead of server -> conflict', () => {
     const { outcome } = applyUpdate(base(), {
       baseVersion: 9,
-      clientUpdatedAt: '2026-08-02T09:00:00.000Z',
       fields: { status: 'done' },
     });
-    assert.equal(outcome, 'conflict_manual');
+    assert.equal(outcome, 'conflict');
   });
 
-  it('non-integer baseVersion -> conflict_manual', () => {
-    assert.equal(applyUpdate(base(), { baseVersion: '3', fields: {} }).outcome, 'conflict_manual');
-    assert.equal(applyUpdate(base(), { fields: {} }).outcome, 'conflict_manual');
+  it('non-integer / missing baseVersion -> conflict', () => {
+    assert.equal(applyUpdate(base(), { baseVersion: '3', fields: {} }).outcome, 'conflict');
+    assert.equal(applyUpdate(base(), { baseVersion: 3.5, fields: {} }).outcome, 'conflict');
+    assert.equal(applyUpdate(base(), { fields: {} }).outcome, 'conflict');
   });
 });

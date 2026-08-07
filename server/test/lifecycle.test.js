@@ -106,7 +106,7 @@ describe('E05 — lifecycle stage governance + operating status', () => {
       body: {
         clientId: 'lifecycle-device',
         operations: [{
-          opId: 'op-fwd', entity: 'project', entityId: SEED.project2, op: 'update',
+          opId: 'op-fwd', seq: 1, entity: 'project', entityId: SEED.project2, op: 'update',
           baseVersion: await getVersion(SEED.project2),
           clientUpdatedAt: new Date().toISOString(),
           fields: { lifecycleStage: 'INITIATION' },
@@ -114,7 +114,7 @@ describe('E05 — lifecycle stage governance + operating status', () => {
       },
     });
     assert.equal(res.status, 200);
-    assert.equal(res.body.results[0].result, 'rejected');
+    assert.equal(res.body.results[0].result, 'blocked');
     assert.equal(res.body.results[0].error, 'VALIDATION');
   });
 

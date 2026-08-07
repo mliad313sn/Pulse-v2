@@ -571,8 +571,12 @@ CREATE TABLE security_approvals (
 CREATE INDEX idx_security_approvals_status ON security_approvals(status);
 
 -- ----------------------------------------------------------------------------
--- Sync queue — JSONB landing zone for offline payloads
--- payload shape: { clientId, entity, entityId, op, baseVersion, clientUpdatedAt, fields }
+-- Sync queue — JSONB landing zone for offline payloads (ordered command log)
+-- payload shape: { clientId, opId, seq, entity, entityId, op, baseVersion,
+--                  clientUpdatedAt, fields }
+-- E25/E26 (ADR-003 executed): outcomes are applied | blocked (first failure —
+-- the batch halts) | held (every op after the blocked one, untouched).
+-- LWW is gone: any stale baseVersion is a conflict ('blocked' VERSION_CONFLICT).
 -- ----------------------------------------------------------------------------
 CREATE TABLE sync_queue (
     id           BIGSERIAL PRIMARY KEY,
@@ -580,7 +584,7 @@ CREATE TABLE sync_queue (
     payload      JSONB NOT NULL,
     received_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     processed_at TIMESTAMPTZ,
-    result       TEXT CHECK (result IN ('applied', 'lww_applied', 'conflict_manual', 'rejected')),
+    result       TEXT CHECK (result IN ('applied', 'blocked', 'held')),
     detail       JSONB
 );
 

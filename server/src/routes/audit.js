@@ -12,6 +12,9 @@ function auditProjectId(entry) {
 
 const PROJECT_SCOPED_TYPES = new Set([
   'tasks', 'roadblocks', 'security_approvals', 'project_members', 'project_updates',
+  // E25/E26: SYNC_DISCARDED entries carry the discarded target's projectId
+  // (when resolvable) so entries about concealed projects stay hidden.
+  'sync',
 ]);
 
 /** GET /api/audit?entityId= — read-only audit trail. */

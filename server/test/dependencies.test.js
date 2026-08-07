@@ -240,7 +240,7 @@ describe('E07 — typed task dependencies + cycle prevention', () => {
       assert.equal(advance.status, 200);
     });
 
-    it('FS locking also applies through offline sync (rejected with DEPENDENCY_LOCKED)', async () => {
+    it('FS locking also applies through offline sync (blocked with DEPENDENCY_LOCKED)', async () => {
       const edge = await mkDep({ predecessorId: task.a.id, successorId: task.d.id, type: 'FS' });
       assert.equal(edge.status, 201);
       const d = (await srv.api('GET', `/api/tasks/${task.d.id}`, { user: USERS.troy })).body;
@@ -249,14 +249,15 @@ describe('E07 — typed task dependencies + cycle prevention', () => {
         body: {
           clientId: 'test-device',
           operations: [{
-            opId: 'op-dep-1', entity: 'task', entityId: task.d.id, op: 'update',
+            opId: 'op-dep-1', seq: 1, entity: 'task', entityId: task.d.id, op: 'update',
             baseVersion: d.version, clientUpdatedAt: new Date().toISOString(),
             fields: { status: 'done' },
           }],
         },
       });
-      assert.equal(res.body.results[0].result, 'rejected');
+      assert.equal(res.body.results[0].result, 'blocked');
       assert.equal(res.body.results[0].error, 'DEPENDENCY_LOCKED');
+      assert.equal(res.body.haltedAt, 'op-dep-1');
     });
   });
 });

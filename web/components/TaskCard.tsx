@@ -33,7 +33,7 @@ export default function TaskCard({
   onSelect,
   dragProps,
 }: Props) {
-  const { user, projects, lockedMessage, openRoadblock, canWrite } = useApp();
+  const { user, projects, lockedMessage, openRoadblock, canWrite, pendingSyncKeys } = useApp();
   const [expanded, setExpanded] = useState(mode === "zen");
   const [editOpen, setEditOpen] = useState(false);
   const board = variant === "board";
@@ -43,6 +43,8 @@ export default function TaskCard({
   const locked = Boolean(task.locked);
   // Planning-field edits: managers only (ADMIN / DIVISION_LEAD / project PM).
   const canEditPlan = canWrite && canManageProject(user, parentProject);
+  // Subtle flag: this task has an offline change queued (or blocked) for sync.
+  const pendingSync = pendingSyncKeys.has(`task:${task.id}`);
 
   return (
     <div
@@ -127,6 +129,15 @@ export default function TaskCard({
           <span className="uppercase tracking-wide">{task.priority}</span>
         )}
         {task.site && <span>{task.site}</span>}
+        {pendingSync && (
+          <span
+            title="Change waiting to sync"
+            aria-label="Change waiting to sync"
+            className="inline-flex items-center text-indigo-400 dark:text-indigo-300"
+          >
+            <ClockIcon className="h-3.5 w-3.5" />
+          </span>
+        )}
       </div>
 
       {expanded && canWrite && (

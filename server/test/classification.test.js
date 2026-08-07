@@ -163,19 +163,19 @@ describe('E03 — classification concealment', () => {
     assert.ok(!JSON.stringify(fullAudit.body).includes(CONF_NAME));
   });
 
-  it('confidential: sync updates against hidden entities reject exactly like missing ids', async () => {
+  it('confidential: sync updates against hidden entities block exactly like missing ids', async () => {
     const res = await srv.api('POST', '/api/sync', {
       user: OUTSIDER,
       body: {
         clientId: 'outsider-device',
         operations: [{
-          opId: randomUUID(), entity: 'task', entityId: confTask.id, op: 'update',
+          opId: randomUUID(), seq: 1, entity: 'task', entityId: confTask.id, op: 'update',
           baseVersion: 1, clientUpdatedAt: new Date().toISOString(), fields: { status: 'in_progress' },
         }],
       },
     });
     assert.equal(res.status, 200);
-    assert.equal(res.body.results[0].result, 'rejected');
+    assert.equal(res.body.results[0].result, 'blocked');
     assert.equal(res.body.results[0].error, 'NOT_FOUND');
     assert.equal(res.body.results[0].serverState, null, 'no server state leaks');
   });

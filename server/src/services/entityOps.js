@@ -488,7 +488,7 @@ export async function patchEntity(repo, actor, kind, id, body) {
     throw validation('No writable fields in payload');
   }
 
-  const { outcome, next } = applyUpdate(current, { baseVersion: body.version, fields }, { strict: true });
+  const { outcome, next } = applyUpdate(current, { baseVersion: body.version, fields });
   if (outcome !== 'applied') {
     throw versionConflict(current);
   }

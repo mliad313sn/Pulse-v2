@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { useApp } from "@/lib/store";
 import { baseRoleLabel, cn, divisionMeta, initials, safeLocalSet } from "@/lib/utils";
 import {
+  AlertIcon,
   CloudIcon,
   CloudOffIcon,
   CogIcon,
@@ -47,14 +48,26 @@ function ThemeToggle() {
 }
 
 function ConnectivityPill() {
-  const { online, syncing, outboxCount } = useApp();
+  const { online, syncing, outboxCount, blocked } = useApp();
   if (!online) {
     return (
       <span className="inline-flex h-8 items-center gap-1.5 rounded-full bg-slate-200 px-3 text-xs font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-300">
         <CloudOffIcon className="h-3.5 w-3.5" />
         <span className="hidden sm:inline">Offline</span>
-        {outboxCount > 0 && <span>· {outboxCount} queued</span>}
+        {outboxCount + blocked.length > 0 && <span>· {outboxCount + blocked.length} queued</span>}
       </span>
+    );
+  }
+  if (blocked.length > 0) {
+    return (
+      <Link
+        href="/conflicts"
+        title="A queued change was refused by the server — review the sync queue."
+        className="inline-flex h-8 items-center gap-1.5 rounded-full bg-rose-100 px-3 text-xs font-medium text-rose-700 transition hover:bg-rose-200 dark:bg-rose-900/50 dark:text-rose-300 dark:hover:bg-rose-900/70"
+      >
+        <AlertIcon className="h-3.5 w-3.5" />
+        Sync blocked{outboxCount > 0 ? ` · ${outboxCount} waiting` : ""}
+      </Link>
     );
   }
   if (syncing || outboxCount > 0) {
@@ -173,7 +186,7 @@ function UserMenu() {
 }
 
 export default function Header() {
-  const { user, conflicts, canDecide, canWrite } = useApp();
+  const { user, blocked, outboxCount, canDecide, canWrite } = useApp();
 
   return (
     <>
@@ -212,13 +225,13 @@ export default function Header() {
                   Admin
                 </Link>
               )}
-              {conflicts.length > 0 && (
+              {blocked.length > 0 && (
                 <Link
                   href="/conflicts"
-                  className="flex items-center gap-1.5 rounded-xl bg-amber-100 px-3 py-2 font-medium text-amber-800 transition hover:bg-amber-200 dark:bg-amber-900/50 dark:text-amber-300"
+                  className="flex items-center gap-1.5 rounded-xl bg-rose-100 px-3 py-2 font-medium text-rose-800 transition hover:bg-rose-200 dark:bg-rose-900/50 dark:text-rose-300"
                 >
                   <MergeIcon className="h-4 w-4" />
-                  Merge ({conflicts.length})
+                  Sync queue
                 </Link>
               )}
             </nav>
@@ -241,13 +254,16 @@ export default function Header() {
         </div>
       </header>
 
-      {user && conflicts.length > 0 && (
+      {user && blocked.length > 0 && (
         <Link
           href="/conflicts"
-          className="block border-b border-amber-300/60 bg-amber-50 px-4 py-2 text-center text-sm font-medium text-amber-900 dark:border-amber-700/60 dark:bg-amber-900/30 dark:text-amber-200"
+          className="block border-b border-rose-300/60 bg-rose-50 px-4 py-2 text-center text-sm font-medium text-rose-900 dark:border-rose-700/60 dark:bg-rose-900/30 dark:text-rose-200"
         >
-          Merge needed — {conflicts.length} change{conflicts.length > 1 ? "s" : ""} conflict with newer server
-          versions. Tap to review.
+          Sync blocked — action needed. The server refused a queued change
+          {outboxCount > 0
+            ? `; ${outboxCount} more ${outboxCount > 1 ? "changes are" : "change is"} waiting behind it.`
+            : "."}{" "}
+          Tap to review.
         </Link>
       )}
     </>

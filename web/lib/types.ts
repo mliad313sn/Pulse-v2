@@ -452,6 +452,8 @@ export type SyncEntity = "task" | "project" | "roadblock";
 /** Outbox operation — exact wire shape of an item in POST /api/sync `operations`. */
 export interface SyncOp {
   opId: string;
+  /** Strictly-increasing integer assigned at enqueue time (persisted counter). */
+  seq: number;
   entity: SyncEntity;
   entityId: string;
   op: "update" | "create";
@@ -465,17 +467,44 @@ export interface QueuedOp extends SyncOp {
   queuedAt: number;
 }
 
-export type SyncResultKind = "applied" | "lww_applied" | "conflict_manual" | "rejected";
+/**
+ * Server verdict per op. The server applies ops in `seq` order and STOPS at the
+ * first failure: `blocked` is that op (serverState present for version
+ * conflicts), `held` ops were untouched and stay queued.
+ */
+export type SyncResultKind = "applied" | "blocked" | "held";
 
 export interface SyncResult {
   opId: string;
   result: SyncResultKind;
-  entity: SyncEntity;
-  entityId: string;
-  serverState?: Record<string, unknown> | null;
   error?: string | null;
+  message?: string | null;
+  serverState?: Record<string, unknown> | null;
 }
 
+/** POST /api/sync response envelope. */
+export interface SyncResponse {
+  results: SyncResult[];
+  /** opId of the op the server stopped at, or null when everything applied. */
+  haltedAt: string | null;
+  serverTime: string;
+}
+
+/**
+ * A blocked op parked outside the outbox — the whole queue is halted until the
+ * user resolves it on the Sync queue page (merge / retry / discard).
+ */
+export interface BlockedOp extends QueuedOp {
+  error: string | null;
+  message: string | null;
+  serverState: Record<string, unknown> | null;
+  blockedAt: string;
+}
+
+/**
+ * LEGACY (pre-DB v6) manual-merge row. Only read once at boot to migrate the
+ * old `conflicts` store into `blocked` ops — never written anymore.
+ */
 export interface ConflictEntry {
   opId: string;
   entity: SyncEntity;

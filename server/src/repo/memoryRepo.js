@@ -577,4 +577,18 @@ export class MemoryRepo {
   async listSyncQueue() {
     return clone(this._syncQueue);
   }
+
+  /**
+   * E25/E26 replay idempotency: the most recent op of this client+opId that
+   * already APPLIED (blocked/held attempts stay retryable). Null when none.
+   */
+  async findAppliedSyncOp(clientId, opId) {
+    for (let i = this._syncQueue.length - 1; i >= 0; i--) {
+      const rec = this._syncQueue[i];
+      if (rec.clientId === clientId && rec.payload?.opId === opId && rec.result === 'applied') {
+        return clone(rec);
+      }
+    }
+    return null;
+  }
 }

@@ -200,7 +200,7 @@ describe('E07 — workstreams + task scheduling fields', () => {
         body: {
           clientId: 'test-device',
           operations: [{
-            opId: 'op-ws-1', entity: 'workstream', entityId: wsId, op: 'create',
+            opId: 'op-ws-1', seq: 1, entity: 'workstream', entityId: wsId, op: 'create',
             fields: { projectId: SEED.project1, title: 'Synced stream' },
           }],
         },
@@ -213,7 +213,7 @@ describe('E07 — workstreams + task scheduling fields', () => {
         body: {
           clientId: 'test-device',
           operations: [{
-            opId: 'op-ws-2', entity: 'workstream', entityId: wsId, op: 'update',
+            opId: 'op-ws-2', seq: 1, entity: 'workstream', entityId: wsId, op: 'update',
             baseVersion: 1, clientUpdatedAt: new Date().toISOString(),
             fields: { status: 'IN_PROGRESS' },
           }],

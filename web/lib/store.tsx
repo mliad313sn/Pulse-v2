@@ -22,12 +22,21 @@ import {
 } from "react";
 import * as idb from "./db";
 import { api, ApiError, setAuthSignalHandler } from "./api";
-import { enqueueOp, flushOutbox, outboxCount } from "./sync";
+import {
+  enqueueOp,
+  flushOutbox,
+  getBlockedOps,
+  getQueuedOps,
+  migrateSyncState,
+  outboxCount,
+  removeBlockedOp,
+  requeueOp,
+} from "./sync";
 import { canDecideApprovals, canWriteUser, isGatedTransition, safeLocalRemove, uuid } from "./utils";
 import { useToast } from "@/components/Toast";
 import type {
   Bootstrap,
-  ConflictEntry,
+  BlockedOp,
   DependencyType,
   LoginResponse,
   Milestone,
@@ -58,7 +67,8 @@ const IDB_STORES: idb.StoreName[] = [
   "approvals",
   "users",
   "outbox",
-  "conflicts",
+  "conflicts", // legacy (pre-v6) — cleared for hygiene
+  "blocked",
   "meta",
   "pillars",
   "portfolios",
@@ -97,7 +107,10 @@ export interface AppState {
   dependencies: TaskDependency[];
   /** Project updates (append-only, ONLINE-ONLY writes; hydrated from bootstrap). */
   updates: ProjectUpdate[];
-  conflicts: ConflictEntry[];
+  /** Ops the server refused — while any exist the sync queue is HALTED (0 or 1). */
+  blocked: BlockedOp[];
+  /** Waiting (held/queued) ops in send (`seq`) order. */
+  queuedOps: QueuedOp[];
   online: boolean;
   syncing: boolean;
   outboxCount: number;
@@ -142,7 +155,20 @@ interface AppActions {
     decision: "approved" | "rejected",
     notes?: string,
   ) => Promise<MutateOutcome>;
-  resolveConflict: (opId: string, resolution: "server" | Record<string, unknown>) => Promise<void>;
+  /**
+   * Version-conflict merge: re-write the blocked op in place (fields = chosen,
+   * baseVersion = server version, same opId + seq) and resume the queue.
+   */
+  resolveBlockedMerge: (opId: string, chosenFields: Record<string, unknown>) => Promise<void>;
+  /** Re-queue a blocked op as-is (transient/gate failures after the world changes). */
+  retryBlocked: (opId: string) => Promise<void>;
+  /**
+   * Explicit discard — ONLINE-ONLY (audited server-side via POST /api/sync/discard).
+   * Reverts the optimistic local entity to serverState when available, resumes the queue.
+   */
+  discardBlocked: (opId: string, reason?: string) => Promise<MutateOutcome>;
+  /** `${entity}:${entityId}` keys that have a queued or blocked op (pending-sync badge). */
+  pendingSyncKeys: Set<string>;
   /** Insert/refresh a project in the local cache (e.g. right after online create). */
   upsertProject: (project: Project) => void;
   /** ONLINE-ONLY (governance mutation — never queued to the outbox). */
@@ -225,7 +251,8 @@ const INITIAL_STATE: AppState = {
   workstreams: [],
   dependencies: [],
   updates: [],
-  conflicts: [],
+  blocked: [],
+  queuedOps: [],
   online: true,
   syncing: false,
   outboxCount: 0,
@@ -267,6 +294,12 @@ function looksLikeUpdate(value: unknown): value is ProjectUpdate {
     typeof (value as { projectId?: unknown }).projectId === "string" &&
     typeof (value as { text?: unknown }).text === "string"
   );
+}
+
+/** Strip the block metadata off a BlockedOp, back to its outbox row shape. */
+function toQueuedOp(entry: BlockedOp): QueuedOp {
+  const { error: _e, message: _m, serverState: _s, blockedAt: _b, ...op } = entry;
+  return op;
 }
 
 function looksLikeEntity(value: unknown): value is { id: string; version: number } {
@@ -371,15 +404,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // ---- sync / flush ---------------------------------------------------------
 
-  const refreshOutboxCount = useCallback(async () => {
-    const n = await outboxCount();
-    // Skip the patch when unchanged so idle polls don't re-render every consumer.
-    if (stateRef.current.outboxCount !== n) patch({ outboxCount: n });
+  /** Reload the persisted queue (waiting + blocked) into state. Cheap no-op patch when unchanged. */
+  const refreshQueue = useCallback(async () => {
+    const [rows, blocked] = await Promise.all([getQueuedOps(), getBlockedOps()]);
+    const prev = stateRef.current;
+    const unchanged =
+      prev.outboxCount === rows.length &&
+      prev.queuedOps.length === rows.length &&
+      prev.blocked.length === blocked.length &&
+      rows.every((r, i) => prev.queuedOps[i]?.opId === r.opId) &&
+      blocked.every((b, i) => prev.blocked[i]?.opId === b.opId);
+    if (!unchanged) patch({ outboxCount: rows.length, queuedOps: rows, blocked });
   }, [patch]);
 
   const flush = useCallback(async () => {
     const s = stateRef.current;
     if (!s.online || flushingRef.current || !s.user) return;
+    // A blocked op halts the queue — nothing is sent until it is resolved.
+    if (s.blocked.length > 0) return;
     const n = await outboxCount();
     if (stateRef.current.outboxCount !== n) patch({ outboxCount: n });
     if (n === 0) return;
@@ -388,52 +430,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       await flushOutbox({
         onApplied: (result, op) => {
-          const listKey = ENTITY_TO_LIST[result.entity];
+          const listKey = ENTITY_TO_LIST[op.entity];
           if (looksLikeEntity(result.serverState)) {
             setEntity(listKey, result.serverState as unknown as Task);
-          } else if (op) {
+          } else {
             const current = (stateRef.current[listKey] as { id: string; version: number }[]).find(
-              (x) => x.id === result.entityId,
+              (x) => x.id === op.entityId,
             );
             if (current) {
-              const bumped = { ...current, version: (op.op === "create" ? 1 : op.baseVersion + 1) };
+              const bumped = { ...current, version: op.op === "create" ? 1 : op.baseVersion + 1 };
               setEntity(listKey, bumped as unknown as Task);
             }
           }
         },
-        onConflict: async (op: QueuedOp, result) => {
-          const entry: ConflictEntry = {
-            opId: op.opId,
-            entity: op.entity,
-            entityId: op.entityId,
-            fields: op.fields,
-            clientUpdatedAt: op.clientUpdatedAt,
-            serverState: (result.serverState ?? {}) as Record<string, unknown>,
-            createdAt: new Date().toISOString(),
-          };
-          await idb.put("conflicts", entry);
-          patch((prev) => ({ conflicts: [...prev.conflicts.filter((c) => c.opId !== entry.opId), entry] }));
-          // Show canonical server state until the user merges.
-          if (looksLikeEntity(result.serverState)) {
-            setEntity(ENTITY_TO_LIST[op.entity], result.serverState as unknown as Task);
-          }
-          toast("A change conflicts with a newer server version — manual merge needed.", "warning");
-        },
-        onRejected: (op, result) => {
-          if (looksLikeEntity(result.serverState)) {
-            setEntity(ENTITY_TO_LIST[result.entity], result.serverState as unknown as Task);
-          }
-          toast(friendlyError(result.error, result.entity, result.entityId), "warning");
+        onBlocked: (blockedRow) => {
+          // Optimistic local state stays applied — it is the user's pending
+          // intent until they merge/retry/discard on the Sync queue page.
+          patch((prev) => ({
+            blocked: [...prev.blocked.filter((b) => b.opId !== blockedRow.opId), blockedRow],
+          }));
+          toast("Sync blocked — a queued change needs your decision.", "warning");
         },
       });
     } catch {
       // network failed mid-flush — outbox preserved, retry later
     } finally {
       flushingRef.current = false;
-      const remaining = await outboxCount();
-      patch({ syncing: false, outboxCount: remaining });
+      await refreshQueue();
+      patch({ syncing: false });
     }
-  }, [patch, setEntity, toast, friendlyError]);
+  }, [patch, setEntity, toast, refreshQueue]);
 
   // ---- bootstrap / refresh --------------------------------------------------
 
@@ -442,8 +468,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!s.user || !s.online) return;
     try {
       const boot = await api<Bootstrap>("/api/bootstrap");
-      // Rebase: keep optimistic fields for still-queued offline ops on top of fresh data.
-      const queued = await idb.getAll<QueuedOp>("outbox");
+      // Rebase: keep optimistic fields for still-pending offline ops (waiting
+      // AND blocked — both are the user's pending intent) on top of fresh data.
+      const [waiting, parked] = await Promise.all([getQueuedOps(), getBlockedOps()]);
+      const queued: QueuedOp[] = [...parked, ...waiting].sort((a, b) => a.seq - b.seq);
       const rebase = <T extends { id: string }>(list: T[], entity: SyncEntity): T[] => {
         const ops = queued.filter((o) => o.entity === entity);
         if (ops.length === 0) return list;
@@ -534,7 +562,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       workstreams: [],
       dependencies: [],
       updates: [],
-      conflicts: [],
+      blocked: [],
+      queuedOps: [],
       outboxCount: 0,
       refreshedAt: null,
       bootLoading: false,
@@ -633,7 +662,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           clientUpdatedAt: new Date().toISOString(),
           fields,
         });
-        await refreshOutboxCount();
+        await refreshQueue();
         return { ok: true, queued: true };
       };
 
@@ -676,7 +705,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return queueIt();
       }
     },
-    [setEntity, toast, friendlyError, refreshOutboxCount, guardWrite],
+    [setEntity, toast, friendlyError, refreshQueue, guardWrite],
   );
 
   const moveTask = useCallback(
@@ -741,7 +770,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             reportedBy: s.user?.id ?? null,
           },
         });
-        await refreshOutboxCount();
+        await refreshQueue();
         return { ok: true, queued: true };
       };
 
@@ -773,7 +802,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return queueIt();
       }
     },
-    [setEntity, removeEntity, toast, refreshOutboxCount, guardWrite],
+    [setEntity, removeEntity, toast, refreshQueue, guardWrite],
   );
 
   const decideApproval = useCallback(
@@ -828,37 +857,88 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [patch, refresh, toast],
   );
 
-  const resolveConflict = useCallback(
-    async (opId: string, resolution: "server" | Record<string, unknown>) => {
-      const entry = stateRef.current.conflicts.find((c) => c.opId === opId);
+  // ---- blocked-op resolution (Sync queue page) ------------------------------
+
+  const resolveBlockedMerge = useCallback(
+    async (opId: string, chosenFields: Record<string, unknown>) => {
+      const entry = stateRef.current.blocked.find((b) => b.opId === opId);
       if (!entry) return;
-      const listKey = ENTITY_TO_LIST[entry.entity];
-      if (resolution === "server") {
-        if (looksLikeEntity(entry.serverState)) {
-          setEntity(listKey, entry.serverState as unknown as Task);
-        }
-      } else {
-        const serverVersion =
-          typeof entry.serverState.version === "number" ? (entry.serverState.version as number) : 1;
-        const merged = { ...entry.serverState, ...resolution, updatedAt: new Date().toISOString() };
-        if (looksLikeEntity(merged)) setEntity(listKey, merged as unknown as Task);
-        await enqueueOp({
-          opId: uuid(),
-          entity: entry.entity,
-          entityId: entry.entityId,
-          op: "update",
-          baseVersion: serverVersion,
-          clientUpdatedAt: new Date().toISOString(),
-          fields: resolution,
-        });
-      }
-      await idb.del("conflicts", opId);
-      patch((prev) => ({ conflicts: prev.conflicts.filter((c) => c.opId !== opId) }));
-      await refreshOutboxCount();
-      if (resolution !== "server") await flush();
-      toast("Merge resolved.", "success");
+      const serverState = entry.serverState ?? {};
+      const serverVersion =
+        typeof serverState.version === "number" ? (serverState.version as number) : entry.baseVersion;
+      // Keep the merged result applied locally (server base + chosen fields).
+      const merged = { ...serverState, ...chosenFields, updatedAt: new Date().toISOString() };
+      if (looksLikeEntity(merged)) setEntity(ENTITY_TO_LIST[entry.entity], merged as unknown as Task);
+      // Re-write the op in place: chosen fields, rebased version, SAME opId + seq.
+      await requeueOp({
+        ...toQueuedOp(entry),
+        fields: chosenFields,
+        baseVersion: serverVersion,
+        clientUpdatedAt: new Date().toISOString(),
+      });
+      await removeBlockedOp(opId);
+      await refreshQueue();
+      toast("Merge applied — resuming sync.", "success");
+      await flush();
     },
-    [patch, setEntity, flush, refreshOutboxCount, toast],
+    [setEntity, flush, refreshQueue, toast],
+  );
+
+  const retryBlocked = useCallback(
+    async (opId: string) => {
+      const entry = stateRef.current.blocked.find((b) => b.opId === opId);
+      if (!entry) return;
+      await requeueOp(toQueuedOp(entry)); // as-is, same opId + seq
+      await removeBlockedOp(opId);
+      await refreshQueue();
+      toast("Change re-queued — retrying sync.", "success");
+      await flush();
+    },
+    [flush, refreshQueue, toast],
+  );
+
+  const discardBlocked = useCallback(
+    async (opId: string, reason?: string): Promise<MutateOutcome> => {
+      const entry = stateRef.current.blocked.find((b) => b.opId === opId);
+      if (!entry) return { ok: false, code: "NOT_FOUND" };
+      // Discards are audited server-side — they require a live connection.
+      if (!stateRef.current.online) {
+        toast("Discarding a queued change needs a live connection (discards are audited).", "warning");
+        return { ok: false, code: "OFFLINE" };
+      }
+      try {
+        await api("/api/sync/discard", {
+          method: "POST",
+          body: {
+            opId: entry.opId,
+            entity: entry.entity,
+            entityId: entry.entityId,
+            reason: reason || undefined,
+          },
+        }); // 204
+      } catch (e) {
+        if (!(e instanceof ApiError)) {
+          toast("Network error — the change was not discarded.", "error");
+          return { ok: false, code: "NETWORK" };
+        }
+        // The server rejected the audit record (e.g. op already unknown) while
+        // reachable — the discard intent was delivered; proceed locally.
+      }
+      const hasServerState = looksLikeEntity(entry.serverState);
+      if (hasServerState) {
+        // Revert the optimistic local entity to the canonical server state.
+        setEntity(ENTITY_TO_LIST[entry.entity], entry.serverState as unknown as Task);
+      }
+      await removeBlockedOp(opId);
+      patch((prev) => ({ blocked: prev.blocked.filter((b) => b.opId !== opId) }));
+      await refreshQueue();
+      toast("Change discarded — resuming sync.", "success");
+      await flush();
+      // No server snapshot to revert to → re-read so the optimistic row is replaced.
+      if (!hasServerState) void refresh();
+      return { ok: true };
+    },
+    [patch, setEntity, flush, refresh, refreshQueue, toast],
   );
 
   const upsertProject = useCallback(
@@ -1329,7 +1409,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     (async () => {
       const online = typeof navigator !== "undefined" ? navigator.onLine : true;
-      const [users, projects, tasks, roadblocks, approvals, milestones, workstreams, dependencies, updates, conflicts, queuedCount, cachedUser, refreshedAt] =
+      // One-shot migration of pre-v6 local state (seq-less outbox rows, legacy conflicts).
+      await migrateSyncState();
+      const [users, projects, tasks, roadblocks, approvals, milestones, workstreams, dependencies, updates, blocked, queuedOps, cachedUser, refreshedAt] =
         await Promise.all([
           idb.getAll<User>("users"),
           idb.getAll<Project>("projects"),
@@ -1340,8 +1422,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           idb.getAll<Workstream>("workstreams"),
           idb.getAll<TaskDependency>("dependencies"),
           idb.getAll<ProjectUpdate>("updates"),
-          idb.getAll<ConflictEntry>("conflicts"),
-          outboxCount(),
+          getBlockedOps(),
+          getQueuedOps(),
           idb.getMeta<User>("currentUser"),
           idb.getMeta<string>("refreshedAt"),
         ]);
@@ -1361,8 +1443,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         workstreams,
         dependencies,
         updates,
-        conflicts,
-        outboxCount: queuedCount,
+        blocked,
+        queuedOps,
+        outboxCount: queuedOps.length,
         user,
         mustChangePassword: Boolean(user?.mustChangePassword),
         refreshedAt: refreshedAt ?? null,
@@ -1422,7 +1505,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     window.addEventListener("offline", goOffline);
     const interval = window.setInterval(() => {
       const s = stateRef.current;
-      if (s.online && s.outboxCount > 0 && !s.syncing) void flush();
+      if (s.online && s.outboxCount > 0 && !s.syncing && s.blocked.length === 0) void flush();
     }, 20000);
     return () => {
       window.removeEventListener("online", goOnline);
@@ -1431,11 +1514,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, [patch, flush, refresh, revalidateSession]);
 
+  // Entities with a pending (queued or blocked) op — surfaced as a subtle badge.
+  const pendingSyncKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const op of state.queuedOps) keys.add(`${op.entity}:${op.entityId}`);
+    for (const op of state.blocked) keys.add(`${op.entity}:${op.entityId}`);
+    return keys;
+  }, [state.queuedOps, state.blocked]);
+
   const value = useMemo<AppState & AppActions>(
     () => ({
       ...state,
       canWrite: canWriteUser(state.user),
       canDecide: canDecideApprovals(state.user),
+      pendingSyncKeys,
       login,
       logout,
       changePassword,
@@ -1446,7 +1538,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       updateRoadblock,
       createRoadblock,
       decideApproval,
-      resolveConflict,
+      resolveBlockedMerge,
+      retryBlocked,
+      discardBlocked,
       upsertProject,
       createMilestone,
       updateMilestone,
@@ -1467,6 +1561,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }),
     [
       state,
+      pendingSyncKeys,
       login,
       logout,
       changePassword,
@@ -1477,7 +1572,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       updateRoadblock,
       createRoadblock,
       decideApproval,
-      resolveConflict,
+      resolveBlockedMerge,
+      retryBlocked,
+      discardBlocked,
       upsertProject,
       createMilestone,
       updateMilestone,
