@@ -8,6 +8,7 @@ import PptxGenJS from 'pptxgenjs';
 import PDFDocument from 'pdfkit';
 import { computeLocked } from '../services/gates.js';
 import { filterReadableProjects } from '../services/policy.js';
+import { groupMembers } from '../routes/helpers.js';
 
 const ACTIVE_STATUSES = ['active', 'at_risk', 'on_hold'];
 const SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -38,13 +39,16 @@ function groupByProject(rows) {
  * roadblocks, because everything below is grouped under the project.
  */
 export async function buildDeckData(repo, forUser) {
-  const [allDivisions, allProjects, tasks, roadblocks] = await Promise.all([
+  const [allDivisions, allProjects, allMembers, tasks, roadblocks] = await Promise.all([
     repo.listDivisions(),
     repo.list('project'),
+    repo.listProjectMembers(),
     repo.list('task'),
     repo.list('roadblock'),
   ]);
-  const projects = filterReadableProjects(forUser, allProjects);
+  // Membership-based classification + enterprise access (E04/E01).
+  const membersByProject = groupMembers(allMembers);
+  const projects = filterReadableProjects(forUser, allProjects, membersByProject);
   const tasksById = new Map(tasks.map((t) => [t.id, t]));
   const tasksByProject = groupByProject(tasks);
   const roadblocksByProject = groupByProject(roadblocks);

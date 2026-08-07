@@ -1,4 +1,4 @@
-# OpsPM360 — API Contract (v2 — session auth + classification)
+# OpsPM360 — API Contract (v3 — org admin, portfolios, project membership, enterprise access)
 
 Shared contract between `server/` (Node.js/Express) and `web/` (Next.js PWA).
 Both sides MUST conform to this document. Base URL: `http://localhost:4000/api`.
@@ -31,11 +31,36 @@ Rules:
 
 `User`: id, name, email, division, site, **baseRole**
 (`ADMIN|DIVISION_LEAD|CONTRIBUTOR|VIEWER`), **privileges** (array; values:
-`security_reviewer`, `steering`), **isActive**, **mustChangePassword**, createdAt.
+`security_reviewer`, `steering`), **isActive**, **mustChangePassword**,
+**enterpriseAccess** (bool, default `true` — see Enterprise access below), createdAt.
 
 - **VIEWER is hard read-only**: every mutating verb on every business endpoint → `403 FORBIDDEN`.
 - Approval decisions require the **`security_reviewer` privilege** (not a base role — an ADMIN without it is denied).
 - Project create requires `ADMIN` or `DIVISION_LEAD`.
+
+### Project roles (E04)
+`ProjectMember`: **{projectId, userId, role}** with role ∈
+`PM|SPONSOR|WORKSTREAM_LEAD|CONTRIBUTOR|SME|FINANCE_CONTROLLER|SECURITY_REVIEWER|SITE_LEAD|AUDITOR|APPROVER|INFORMED`.
+
+- Exactly **one PM per project** (may be none). POSTing a new member with role
+  `PM` atomically swaps the incumbent out; both mutations are audited.
+- **VIEWER users can never be `PM` or `WORKSTREAM_LEAD`** → `400 VALIDATION` (plan invariant 2).
+- The PM gains project-scoped write authority (see Write policy).
+
+### Write policy (E04 — replaces the v1 "any writer writes anything" model)
+- **Manage-level** (`canManageProjectWork`): ADMIN, the project's **PM member**,
+  or a **DIVISION_LEAD of the project's division** → project PATCH (except
+  ADMIN-only classification), member management, and all task/roadblock writes.
+- **Everyone else** (plain CONTRIBUTOR, DIVISION_LEAD of another division) may
+  write a task/roadblock only when personally involved: task **assignee**,
+  roadblock **reporter**, project **owner/sponsor**, or a **contributing
+  member** (any project role except `INFORMED`/`AUDITOR`).
+  Creating a task requires membership/ownership/management (self-assignment
+  does not qualify); creating a roadblock is open to any writer who can READ
+  the project (they become its reporter — 1-click field logging), but only
+  managers may set `reportedBy` to someone else.
+- Denials are `403 FORBIDDEN` (the project's existence is already known);
+  unreadable projects still conceal with `404`.
 
 ## Admin user management (`ADMIN` only — everyone else 403)
 
@@ -43,16 +68,17 @@ Rules:
 |---|---|
 | `GET /api/users` | full directory incl. baseRole, privileges, isActive |
 | `POST /api/users` `{name,email,division,site?,baseRole,privileges?}` | `201 {user, temporaryPassword}` — password generated server-side, `mustChangePassword=true`; the temp password is returned ONCE and never logged/audited |
-| `PATCH /api/users/:id` `{baseRole?,privileges?,isActive?,division?,site?}` | `200 {user}`; deactivating (`isActive:false`) revokes all the user's sessions |
+| `PATCH /api/users/:id` `{baseRole?,privileges?,isActive?,division?,site?,enterpriseAccess?}` | `200 {user}`; deactivating (`isActive:false`) revokes all the user's sessions |
 | `POST /api/users/:id/reset-password` | `200 {temporaryPassword}` — revokes sessions, sets `mustChangePassword` |
 | `POST /api/users/:id/unlock` | `204` — clears the failure lockout |
 
-## Classification & concealment (ADR-005)
+## Classification & concealment (ADR-005, membership-based since E04)
 
 `Project.classification`: `internal` (default) \| `restricted` \| `confidential`.
 
-- **confidential** → readable only by ADMIN or the project owner.
-- **restricted** → ADMIN, owner, or users of the same division.
+- **confidential** → readable by ADMIN, the owner, the sponsor, or **ANY
+  project member**.
+- **restricted** → the above OR users of the same division.
 - **internal** → any active authenticated user.
 - Unauthorized projects are **concealed**: direct GET/PATCH → the SAME
   `404 NOT_FOUND` as a truly absent id (never 403); absent from
@@ -61,8 +87,70 @@ Rules:
   executive deck (built per requesting user).
 - Only **ADMIN** may set/change `classification` (PATCH by others → `403`);
   non-ADMIN creators get it forced to `internal`.
-- Interim scope: until project membership (E04), access derives from
-  ownership/division as above.
+
+## Enterprise access (E01, plan §8.2)
+
+`User.enterpriseAccess` (bool, default `true`; ADMIN-editable via
+`PATCH /api/users/:id`). When **false**, EVERY read path (projects, tasks,
+roadblocks, approvals, bootstrap, audit, sync, executive deck) is additionally
+filtered to projects that are:
+- on the user's site (`project.site === user.site` **or** `project.sites[]`
+  contains it), **or**
+- projects where the user is a **member, owner, or sponsor**.
+
+Concealment semantics are identical to classification: uniform `404`, absent
+from all lists/counts/exports. Portfolio structures (pillars/portfolios/
+programs) and org reference data are metadata and stay readable.
+
+## Org administration (E01)
+
+| Endpoint | Behavior |
+|---|---|
+| `GET /api/sites` · `GET /api/divisions` | `200 [{code, name, description}]` — any authenticated user |
+| `POST /api/sites` · `POST /api/divisions` `{code, name, description?}` | `201` — **ADMIN only**; code must be a lowercase slug, unique → else `400` |
+| `PATCH /api/sites/:code` · `PATCH /api/divisions/:code` `{code?, name?, description?}` | `200` — **ADMIN only**. name/description always editable; `code` rename allowed ONLY while unreferenced by any user/project/task → else `400 VALIDATION` |
+| `GET /api/org/tree` | `200 {sites, divisions}` where each division carries `userCount` — any authenticated user (Admin Center overview) |
+
+## Portfolio foundations (E04)
+
+`StrategicPillar`: id, name, description (+ createdAt/updatedAt).
+`Portfolio`: id, title, description, pillarId?, ownerId?, dateFrom?, dateTo? (ISO dates `YYYY-MM-DD`).
+`Program`: id, title, objective?, **portfolioId** (required), ownerId?.
+
+| Endpoint | Behavior |
+|---|---|
+| `GET /api/pillars` / `GET /api/pillars/:id` | any authenticated user |
+| `POST /api/pillars` · `PATCH /api/pillars/:id` | **ADMIN only**; no DELETE |
+| `GET /api/portfolios` / `:id` · `GET /api/programs` / `:id` (`?portfolioId=` filter) | any authenticated user |
+| `POST`/`PATCH` portfolios & programs | **ADMIN or DIVISION_LEAD**; unknown pillarId/portfolioId/ownerId → `400 VALIDATION` |
+
+PATCH on these structures is partial (no OCC `version` — they are
+admin-managed reference data, not collaborative core objects); every mutation
+is audited. No delete endpoints exist.
+
+## Project membership endpoints (E04)
+
+| Endpoint | Behavior |
+|---|---|
+| `GET /api/projects/:id/members` | `200 [{projectId, userId, role}]` — anyone who can read the project (else concealed 404) |
+| `POST /api/projects/:id/members` `{userId, role}` | `201 {projectId, userId, role}` — **ADMIN, the project PM, or DIVISION_LEAD of the project's division**; role `PM` swaps the incumbent atomically (both audited); VIEWER as PM/WORKSTREAM_LEAD, unknown user, bad role, duplicate → `400 VALIDATION`; unauthorized manager → `403` |
+| `DELETE /api/projects/:id/members/:userId/:role` | `204`; missing membership → `404` |
+
+## Project codes & lifecycle (E04)
+
+- `Project.code`: server-generated `PRJ-YYYY-NNN` (year of creation, sequence
+  zero-padded to ≥3 digits), **unique and immutable**. Allocation is
+  concurrency-safe (`project_code_sequences` row-locked inside the create
+  transaction — never max()+1). Supplying `code` on create, or PATCHing it to
+  a different value → `400 VALIDATION` (echoing the identical value is
+  tolerated). Seed projects carry `PRJ-2026-001..003`.
+- `Project.lifecycleStage`: `IDEA|INITIATION|PLANNING|EXECUTION|DEPLOYMENT|RUN|CLOSED`
+  (default `IDEA`). THIS slice is data + validation only: a PATCH (or sync
+  update) may move the stage exactly ONE step forward or backward — skips →
+  `400 INVALID_LIFECYCLE_TRANSITION` with `detail {from, to}`. The G0–G5 gate
+  engine lands in E05.
+- `Project.operatingStatus`: `NOT_STARTED|IN_PROGRESS|ON_HOLD|COMPLETED|CANCELLED`
+  (default `NOT_STARTED`), freely movable (enum-validated).
 
 ## Error envelope
 ```json
@@ -82,13 +170,19 @@ Rules:
 | 409  | `VERSION_CONFLICT`   | OCC mismatch on direct (online) update                      |
 | 423  | `DEPENDENCY_LOCKED`  | task advance blocked by incomplete prerequisite             |
 | 423  | `SECURITY_GATE`      | task advance blocked by pending InfoSec approval            |
-| 400  | `VALIDATION`         | bad payload                                                 |
+| 400  | `INVALID_LIFECYCLE_TRANSITION` | lifecycleStage moved more than one step (`detail {from, to}`) |
+| 400  | `VALIDATION`         | bad payload (incl. immutable `code`, VIEWER-as-PM, unknown refs) |
 
 ## Entities (JSON, camelCase over the wire)
-`Project`: id, name, description, division, site, cgeitTag, strategicTag,
+`Project`: id, **code** (PRJ-YYYY-NNN, immutable), name, description,
+division, site (primary), **sites[]** (additional site codes),
+**engagedDivisions[]**, cgeitTag, strategicTag,
 riskTags[], classification (`internal|restricted|confidential`),
 overallStatus (`draft|active|at_risk|on_hold|complete`),
+**lifecycleStage**, **operatingStatus**,
 securityGateStatus (`not_required|pending|approved|rejected`), ownerId,
+**portfolioId?**, **programId?**, **sponsorId?**,
+**pmId** (derived — the single PM member's userId, or null),
 version, updatedAt, createdAt.
 
 `Task`: id, projectId, title, description, division, site, assigneeId,
@@ -107,15 +201,17 @@ version, updatedAt, createdAt.
 ## Endpoints (business — all require a session; classification filter applies to every read)
 | Method & path | Notes |
 |---|---|
-| `GET /api/bootstrap` | `{ user, projects, tasks, roadblocks, approvals, serverTime }` — everything the client caches into IndexedDB (concealed projects and their children excluded) |
-| `GET /api/projects` / `GET /api/projects/:id` | classification-filtered; concealed → uniform 404 |
-| `POST /api/projects` | create (ADMIN or DIVISION_LEAD); body = Project fields minus server-managed; non-ADMIN classification forced `internal` |
-| `PATCH /api/projects/:id` | body must include `version` (the base version); OCC applies; classification change is ADMIN-only (403) |
+| `GET /api/bootstrap` | `{ user, projects, tasks, roadblocks, approvals, pillars, portfolios, programs, serverTime }` — everything the client caches into IndexedDB (concealed projects and their children excluded; projects carry `pmId`) |
+| `GET /api/projects` / `GET /api/projects/:id` | classification + enterprise-access filtered; concealed → uniform 404; projects carry derived `pmId` |
+| `POST /api/projects` | create (ADMIN or DIVISION_LEAD); body = Project fields minus server-managed (`code` is generated); non-ADMIN classification forced `internal`; unknown portfolioId/programId/sponsorId/engagedDivisions/sites → 400 |
+| `PATCH /api/projects/:id` | body must include `version` (the base version); OCC applies; requires manage-level authority (ADMIN/PM/division lead — else 403); classification change ADMIN-only (403); `code` immutable (400); lifecycleStage single-step (400 INVALID_LIFECYCLE_TRANSITION) |
 | `GET /api/projects/:id/tasks` · `GET /api/tasks` | tasks incl. derived `locked`; tasks of concealed projects hidden |
-| `POST /api/tasks` | create (any writer; VIEWER 403) |
-| `PATCH /api/tasks/:id` | body must include `version`; OCC + gate checks (409/423) |
-| `GET /api/roadblocks` · `POST /api/roadblocks` | POST body: projectId, taskId?, description, severity? |
-| `PATCH /api/roadblocks/:id` | OCC as above |
+| `GET /api/projects/:id/members` · `POST /api/projects/:id/members` · `DELETE /api/projects/:id/members/:userId/:role` | see Project membership endpoints |
+| `POST /api/tasks` | create — manage-level, contributing member, or project owner/sponsor (else 403; VIEWER always 403) |
+| `PATCH /api/tasks/:id` | body must include `version`; E04 write policy (403) + OCC + gate checks (409/423) |
+| `GET /api/roadblocks` · `POST /api/roadblocks` | POST body: projectId, taskId?, description, severity? — any writer who can read the project (becomes reporter) |
+| `PATCH /api/roadblocks/:id` | E04 write policy (reporter/owner/member/manage) + OCC as above |
+| `GET /api/sites` · `/api/divisions` · `/api/org/tree` · `/api/pillars` · `/api/portfolios` · `/api/programs` (+ POST/PATCH) | see Org administration & Portfolio foundations |
 | `GET /api/approvals?status=pending` | InfoSec queue (classification-filtered) |
 | `POST /api/approvals/:id/decision` | body `{ decision: "approved"\|"rejected", notes? }`; requires the `security_reviewer` privilege; recomputes project securityGateStatus |
 | `GET /api/audit?entityId=` | read-only audit trail (entries of concealed projects filtered) |
@@ -156,9 +252,12 @@ Response:
 
 ## Scoping summary
 - **Hard walls** (server-enforced): VIEWER read-only; ADMIN-only user
-  management and classification changes; ADMIN/DIVISION_LEAD project create;
-  `security_reviewer`-privilege approval decisions; classification
-  concealment on every read path.
+  management, org/pillar admin and classification changes; ADMIN/DIVISION_LEAD
+  project + portfolio/program create; E04 membership-based write policy on
+  projects/tasks/roadblocks; one-PM-per-project with no VIEWER leads;
+  immutable project codes; single-step lifecycle transitions;
+  `security_reviewer`-privilege approval decisions; classification AND
+  enterprise-access concealment on every read path.
 - **Presentation-level defaulting** (not a wall): `ops`-division users get
   their own site's tasks/roadblocks ordered first (tactical Zen Mode);
   `infosec` surfaces the pending approvals queue; `management` portfolio
@@ -170,3 +269,6 @@ Response:
 3. A project whose `securityGateStatus === "pending"` blocks all its tasks from advancing → 423 `SECURITY_GATE`.
 4. Creating/updating a project or task with risk tag `network_alteration` (or `firewall_change`, `external_exposure`) auto-creates a pending `SecurityApproval` and flips the project gate to `pending` (DB trigger does this; server must re-read after write).
 5. Every mutation is audit-logged; audit rows are immutable.
+6. At most one `PM` member per project (partial unique index); VIEWER users never hold PM/WORKSTREAM_LEAD (trigger backstop).
+7. Project `code` is immutable after creation (trigger backstop) and allocated race-free per year.
+8. `lifecycleStage` moves one step at a time (service-enforced; E05 replaces this with the real gate engine).

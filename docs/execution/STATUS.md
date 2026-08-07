@@ -1,6 +1,6 @@
 # Execution Status
 
-Updated: 2026-08-07 (Wave 1 identity slice COMPLETE and verified)
+Updated: 2026-08-07 (Wave 1 slices 1-2 COMPLETE and verified)
 
 ## Where we are
 
@@ -33,10 +33,20 @@ Scope delivered:
 6. Permission matrix tests (negative-heavy) + auth lifecycle tests.
 7. Web: login page (email+password), session handling, role-aware nav, password-change screen.
 
+## Completed slice 2: E01 admin CRUD + E04 portfolio foundations — DONE
+Verified: 107/107 server tests (19 suites) · real-Postgres smoke (schema/seed apply, 6 parallel
+creates → sequential PRJ codes, triggers fire) · typed web build · browser smoke (Admin Center,
+project creation w/ code, members, viewer-PM rejection). Contract: docs/API_CONTRACT.md v3.
+Delivered: org admin CRUD + org tree; pillars/portfolios/programs; tx-safe PRJ-YYYY-NNN codes;
+project_members with single-PM constraint + viewer-PM ban; project-scoped write authority
+(canManageProjectWork); membership-based classification; enterprise-access OFF site scoping;
+lifecycle stage fields with one-step guard (gate engine placeholder); Admin Center UI; project
+creation + members UI; lifecycle/status/code chips.
+
 ## Next slices (in order)
-1. E01: org hierarchy completion (organization/service tiers, memberships, admin CRUD APIs + Admin Center shell).
-2. E04: pillars/portfolios/programs + PRJ-YYYY-NNN codes (tx-safe) + PM project role + Project Room shell.
-3. E05: lifecycle stages + gate engine G0–G5 + approval ledger + Steering privilege + War Room.
+1. E05: gate engine G0–G5 (data-driven requirements) + immutable approval ledger + Steering
+   privilege enforcement (PLANNING→EXECUTION) + War Room screen + INVALID_LIFECYCLE_TRANSITION
+   replaced by gate-checked transitions.
 4. E26/E25 rework: strict conflict (drop LWW for core objects), ordered halt-on-refusal offline queue.
 5. E07/E08: workstreams, typed dependencies, milestones, weighted progress.
 

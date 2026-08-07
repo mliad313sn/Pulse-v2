@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { asyncHandler } from './middleware.js';
-import { withLocked } from './helpers.js';
+import { loadProjectAccess, withLocked, withPmAll } from './helpers.js';
 import { filterReadableProjects, readableProjectIds } from '../services/policy.js';
 import { publicUser } from '../services/auth.js';
 
@@ -9,22 +9,30 @@ export function bootstrapRouter() {
   const router = Router();
   router.get('/', asyncHandler(async (req, res) => {
     const repo = req.app.locals.repo;
-    const [projects, tasks, roadblocks, approvals] = await Promise.all([
-      repo.list('project'),
-      repo.list('task'),
-      repo.list('roadblock'),
-      repo.list('approval'),
-    ]);
-    // ADR-005: concealed projects (and their children) never reach the client cache.
-    const visibleProjects = filterReadableProjects(req.user, projects);
-    const visible = readableProjectIds(req.user, projects);
+    const [{ projects, membersByProject }, tasks, roadblocks, approvals, pillars, portfolios, programs] =
+      await Promise.all([
+        loadProjectAccess(repo),
+        repo.list('task'),
+        repo.list('roadblock'),
+        repo.list('approval'),
+        repo.list('pillar'),
+        repo.list('portfolio'),
+        repo.list('program'),
+      ]);
+    // ADR-005 + E01 enterprise access: concealed projects (and their children)
+    // never reach the client cache.
+    const visibleProjects = filterReadableProjects(req.user, projects, membersByProject);
+    const visible = readableProjectIds(req.user, projects, membersByProject);
     const visibleTasks = tasks.filter((t) => visible.has(t.projectId));
     res.json({
       user: publicUser(req.user),
-      projects: visibleProjects,
+      projects: withPmAll(visibleProjects, membersByProject),
       tasks: await withLocked(repo, visibleTasks, { tasks, projects }),
       roadblocks: roadblocks.filter((r) => visible.has(r.projectId)),
       approvals: approvals.filter((a) => visible.has(a.projectId)),
+      pillars,
+      portfolios,
+      programs,
       serverTime: new Date().toISOString(),
     });
   }));

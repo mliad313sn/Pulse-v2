@@ -125,6 +125,13 @@ export function usersRouter() {
         if (typeof body.isActive !== 'boolean') throw validation('isActive must be a boolean', { field: 'isActive' });
         next.isActive = body.isActive;
       }
+      if (body.enterpriseAccess !== undefined) {
+        // E01/plan §8.2: FALSE narrows every read to own-site or membered projects.
+        if (typeof body.enterpriseAccess !== 'boolean') {
+          throw validation('enterpriseAccess must be a boolean', { field: 'enterpriseAccess' });
+        }
+        next.enterpriseAccess = body.enterpriseAccess;
+      }
 
       const row = await tx.updateUser(next);
       if (body.baseRole !== undefined && body.baseRole !== user.baseRole) {

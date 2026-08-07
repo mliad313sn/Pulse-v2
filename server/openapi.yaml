@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: OpsPM360 API
-  version: "1.0.0"
+  version: "1.1.0"
   description: |
     Offline-first project portfolio management for multi-site mining IT operations.
     Auth: server-side sessions — POST /auth/login sets the HttpOnly `ppm_session`
@@ -11,12 +11,19 @@ info:
     conceals unauthorized projects with uniform 404s.
     Governance invariants (OCC, dependency locking, InfoSec gates, audit) are enforced
     server-side and mirrored by PostgreSQL triggers.
+    E01/E04: org admin (sites/divisions/org tree), portfolio foundations
+    (pillars/portfolios/programs), project membership (one PM per project;
+    membership-based writes and classification), server-generated immutable
+    PRJ-YYYY-NNN codes, single-step lifecycle stages, and per-user enterprise
+    access scoping.
 servers:
   - url: http://localhost:4000/api
 tags:
   - name: system
   - name: auth
   - name: users
+  - name: org
+  - name: portfolios
   - name: projects
   - name: tasks
   - name: roadblocks
@@ -247,6 +254,7 @@ paths:
                 isActive: { type: boolean }
                 division: { type: string }
                 site: { type: string, nullable: true }
+                enterpriseAccess: { type: boolean }
       responses:
         "200":
           description: Updated
@@ -289,6 +297,329 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /sites:
+    get:
+      tags: [org]
+      summary: List sites (any authenticated user)
+      responses:
+        "200":
+          description: Sites
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Site" }
+    post:
+      tags: [org]
+      summary: Create a site (ADMIN only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefDataCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Site" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /sites/{code}:
+    parameters:
+      - name: code
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [org]
+      summary: Update a site (ADMIN only; code rename allowed only while unreferenced)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefDataPatch" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Site" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /divisions:
+    get:
+      tags: [org]
+      summary: List divisions (any authenticated user)
+      responses:
+        "200":
+          description: Divisions
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Division" }
+    post:
+      tags: [org]
+      summary: Create a division (ADMIN only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefDataCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Division" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /divisions/{code}:
+    parameters:
+      - name: code
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [org]
+      summary: Update a division (ADMIN only; code rename allowed only while unreferenced)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefDataPatch" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Division" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /org/tree:
+    get:
+      tags: [org]
+      summary: Admin Center overview — sites + divisions with users-per-division counts
+      responses:
+        "200":
+          description: Org tree
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sites:
+                    type: array
+                    items: { $ref: "#/components/schemas/Site" }
+                  divisions:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: "#/components/schemas/Division"
+                        - type: object
+                          properties:
+                            userCount: { type: integer }
+
+  /pillars:
+    get:
+      tags: [portfolios]
+      summary: List strategic pillars (any authenticated user)
+      responses:
+        "200":
+          description: Pillars
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/StrategicPillar" }
+    post:
+      tags: [portfolios]
+      summary: Create a strategic pillar (ADMIN only; no delete endpoint exists)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                description: { type: string, nullable: true }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StrategicPillar" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /pillars/{id}:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    get:
+      tags: [portfolios]
+      summary: Get a pillar
+      responses:
+        "200":
+          description: Pillar
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StrategicPillar" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [portfolios]
+      summary: Update a pillar (ADMIN only; partial — no OCC version)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string, nullable: true }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StrategicPillar" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /portfolios:
+    get:
+      tags: [portfolios]
+      summary: List portfolios (any authenticated user)
+      responses:
+        "200":
+          description: Portfolios
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Portfolio" }
+    post:
+      tags: [portfolios]
+      summary: Create a portfolio (ADMIN or DIVISION_LEAD)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PortfolioCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Portfolio" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /portfolios/{id}:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    get:
+      tags: [portfolios]
+      summary: Get a portfolio
+      responses:
+        "200":
+          description: Portfolio
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Portfolio" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [portfolios]
+      summary: Update a portfolio (ADMIN or DIVISION_LEAD; partial — no OCC version)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PortfolioCreate" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Portfolio" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /programs:
+    get:
+      tags: [portfolios]
+      summary: List programs (any authenticated user)
+      parameters:
+        - name: portfolioId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Programs
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Program" }
+    post:
+      tags: [portfolios]
+      summary: Create a program (ADMIN or DIVISION_LEAD; portfolioId required)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProgramCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Program" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /programs/{id}:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    get:
+      tags: [portfolios]
+      summary: Get a program
+      responses:
+        "200":
+          description: Program
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Program" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [portfolios]
+      summary: Update a program (ADMIN or DIVISION_LEAD; partial — no OCC version)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProgramCreate" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Program" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /bootstrap:
     get:
       tags: [system]
@@ -314,6 +645,15 @@ paths:
                   approvals:
                     type: array
                     items: { $ref: "#/components/schemas/SecurityApproval" }
+                  pillars:
+                    type: array
+                    items: { $ref: "#/components/schemas/StrategicPillar" }
+                  portfolios:
+                    type: array
+                    items: { $ref: "#/components/schemas/Portfolio" }
+                  programs:
+                    type: array
+                    items: { $ref: "#/components/schemas/Program" }
                   serverTime: { type: string, format: date-time }
         "401": { $ref: "#/components/responses/Unauthenticated" }
 
@@ -393,6 +733,63 @@ paths:
               schema:
                 type: array
                 items: { $ref: "#/components/schemas/Task" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/members:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    get:
+      tags: [projects]
+      summary: Project members (anyone who can read the project; concealed otherwise)
+      responses:
+        "200":
+          description: Membership rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ProjectMember" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [projects]
+      summary: Add a member (ADMIN, the project PM, or DIVISION_LEAD of the project's division). Role PM atomically swaps the incumbent (both audited). VIEWER can never be PM/WORKSTREAM_LEAD.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, role]
+              properties:
+                userId: { type: string, format: uuid }
+                role: { $ref: "#/components/schemas/ProjectRole" }
+      responses:
+        "201":
+          description: Added
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectMember" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/members/{userId}/{role}:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+      - name: userId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: role
+        in: path
+        required: true
+        schema: { $ref: "#/components/schemas/ProjectRole" }
+    delete:
+      tags: [projects]
+      summary: Remove a membership (same authority as adding)
+      responses:
+        "204": { description: Removed }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /tasks:
@@ -681,7 +1078,8 @@ components:
           type: string
           enum: [AUTH_REQUIRED, AUTH_FAILED, ACCOUNT_LOCKED, ACCOUNT_DISABLED, RATE_LIMITED,
                  PASSWORD_CHANGE_REQUIRED, NOT_CONFIGURED, FORBIDDEN, NOT_FOUND, VERSION_CONFLICT,
-                 DEPENDENCY_LOCKED, SECURITY_GATE, VALIDATION, INTERNAL]
+                 DEPENDENCY_LOCKED, SECURITY_GATE, INVALID_LIFECYCLE_TRANSITION, VALIDATION,
+                 INTERNAL]
         message: { type: string }
         detail:
           type: object
@@ -693,24 +1091,38 @@ components:
         id: { type: string, format: uuid }
         name: { type: string }
         email: { type: string }
-        division: { type: string, enum: [ops, infra, ea, infosec, data, bizapps, management] }
-        site: { type: string, nullable: true, enum: [sabodala, saly, hq, null] }
+        division: { type: string, description: A division code (admin-extensible) }
+        site: { type: string, nullable: true, description: A site code (admin-extensible) }
         baseRole: { type: string, enum: [ADMIN, DIVISION_LEAD, CONTRIBUTOR, VIEWER] }
         privileges:
           type: array
           items: { type: string, enum: [security_reviewer, steering] }
         isActive: { type: boolean }
         mustChangePassword: { type: boolean }
+        enterpriseAccess:
+          type: boolean
+          description: When false, every read is scoped to own-site or member/owner/sponsor projects
         createdAt: { type: string, format: date-time }
 
     Project:
       type: object
       properties:
         id: { type: string, format: uuid }
+        code:
+          type: string
+          pattern: '^PRJ-\d{4}-\d{3,}$'
+          description: Server-generated PRJ-YYYY-NNN, unique and immutable
         name: { type: string }
         description: { type: string, nullable: true }
         division: { type: string }
-        site: { type: string, nullable: true }
+        site: { type: string, nullable: true, description: Primary site }
+        sites:
+          type: array
+          items: { type: string }
+          description: Additional site codes
+        engagedDivisions:
+          type: array
+          items: { type: string }
         cgeitTag:
           type: string
           enum: [strategic_alignment, value_delivery, risk_optimization, resource_optimization, performance_measurement]
@@ -723,8 +1135,23 @@ components:
           enum: [internal, restricted, confidential]
           description: Read scoping (ADR-005) — unauthorized projects are concealed with uniform 404s
         overallStatus: { type: string, enum: [draft, active, at_risk, on_hold, complete] }
+        lifecycleStage:
+          type: string
+          enum: [IDEA, INITIATION, PLANNING, EXECUTION, DEPLOYMENT, RUN, CLOSED]
+          description: Moves one step at a time (400 INVALID_LIFECYCLE_TRANSITION on skips); gate engine in E05
+        operatingStatus:
+          type: string
+          enum: [NOT_STARTED, IN_PROGRESS, ON_HOLD, COMPLETED, CANCELLED]
         securityGateStatus: { type: string, enum: [not_required, pending, approved, rejected] }
         ownerId: { type: string, format: uuid, nullable: true }
+        portfolioId: { type: string, format: uuid, nullable: true }
+        programId: { type: string, format: uuid, nullable: true }
+        sponsorId: { type: string, format: uuid, nullable: true }
+        pmId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Derived — the single PM member's userId, or null
         version: { type: integer }
         updatedAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time }
@@ -748,6 +1175,21 @@ components:
           description: Only ADMIN may set it; forced to internal otherwise (403 on change)
         overallStatus: { type: string }
         ownerId: { type: string, format: uuid }
+        portfolioId: { type: string, format: uuid, nullable: true }
+        programId: { type: string, format: uuid, nullable: true }
+        sponsorId: { type: string, format: uuid, nullable: true }
+        lifecycleStage:
+          type: string
+          enum: [IDEA, INITIATION, PLANNING, EXECUTION, DEPLOYMENT, RUN, CLOSED]
+        operatingStatus:
+          type: string
+          enum: [NOT_STARTED, IN_PROGRESS, ON_HOLD, COMPLETED, CANCELLED]
+        engagedDivisions:
+          type: array
+          items: { type: string }
+        sites:
+          type: array
+          items: { type: string }
 
     ProjectPatch:
       allOf:
@@ -861,6 +1303,102 @@ components:
         reviewedBy: { type: string, format: uuid, nullable: true }
         reviewedAt: { type: string, format: date-time, nullable: true }
         notes: { type: string, nullable: true }
+
+    Site:
+      type: object
+      properties:
+        code: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+
+    Division:
+      type: object
+      properties:
+        code: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+
+    RefDataCreate:
+      type: object
+      required: [code, name]
+      properties:
+        code: { type: string, pattern: '^[a-z0-9][a-z0-9_-]{0,31}$' }
+        name: { type: string }
+        description: { type: string, nullable: true }
+
+    RefDataPatch:
+      type: object
+      properties:
+        code:
+          type: string
+          description: Rename allowed ONLY while unreferenced by any user/project/task
+        name: { type: string }
+        description: { type: string, nullable: true }
+
+    StrategicPillar:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    Portfolio:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        pillarId: { type: string, format: uuid, nullable: true }
+        ownerId: { type: string, format: uuid, nullable: true }
+        dateFrom: { type: string, format: date, nullable: true }
+        dateTo: { type: string, format: date, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    PortfolioCreate:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string }
+        description: { type: string, nullable: true }
+        pillarId: { type: string, format: uuid, nullable: true }
+        ownerId: { type: string, format: uuid, nullable: true }
+        dateFrom: { type: string, format: date, nullable: true }
+        dateTo: { type: string, format: date, nullable: true }
+
+    Program:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        objective: { type: string, nullable: true }
+        portfolioId: { type: string, format: uuid }
+        ownerId: { type: string, format: uuid, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ProgramCreate:
+      type: object
+      required: [title, portfolioId]
+      properties:
+        title: { type: string }
+        objective: { type: string, nullable: true }
+        portfolioId: { type: string, format: uuid }
+        ownerId: { type: string, format: uuid, nullable: true }
+
+    ProjectRole:
+      type: string
+      enum: [PM, SPONSOR, WORKSTREAM_LEAD, CONTRIBUTOR, SME, FINANCE_CONTROLLER,
+             SECURITY_REVIEWER, SITE_LEAD, AUDITOR, APPROVER, INFORMED]
+
+    ProjectMember:
+      type: object
+      properties:
+        projectId: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        role: { $ref: "#/components/schemas/ProjectRole" }
 
     AuditEntry:
       type: object

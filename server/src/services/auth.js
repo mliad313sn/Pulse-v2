@@ -51,6 +51,7 @@ export function publicUser(user) {
     privileges: user.privileges ?? [],
     isActive: user.isActive !== false,
     mustChangePassword: user.mustChangePassword === true,
+    enterpriseAccess: user.enterpriseAccess !== false,
     createdAt: user.createdAt,
   };
 }

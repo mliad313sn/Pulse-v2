@@ -235,6 +235,50 @@ describe('E03 — classification concealment', () => {
     assert.ok(!JSON.stringify(boot.body).includes(RESTR_NAME));
   });
 
+  it('E04 membership upgrade: ANY project member may read a confidential project; sponsor too', async () => {
+    // ibrahima (bizapps CONTRIBUTOR) is unrelated to the confidential infra
+    // project — concealed...
+    const beforeGet = await srv.api('GET', `/api/projects/${conf.id}`, { user: USERS.ibrahima });
+    assert.equal(beforeGet.status, 404);
+
+    // ...until the owner (moussa) adds him as an SME member.
+    const add = await srv.api('POST', `/api/projects/${conf.id}/members`, {
+      user: USERS.troy, body: { userId: USERS.ibrahima, role: 'SME' },
+    });
+    assert.equal(add.status, 201);
+
+    const afterGet = await srv.api('GET', `/api/projects/${conf.id}`, { user: USERS.ibrahima });
+    assert.equal(afterGet.status, 200);
+    assert.equal(afterGet.body.name, CONF_NAME);
+    const list = await srv.api('GET', '/api/projects', { user: USERS.ibrahima });
+    assert.ok(list.body.some((p) => p.id === conf.id));
+    const memberTask = await srv.api('GET', `/api/tasks/${confTask.id}`, { user: USERS.ibrahima });
+    assert.equal(memberTask.status, 200);
+
+    // membership does not weaken concealment for the still-unrelated outsider
+    const stillHidden = await srv.api('GET', `/api/projects/${conf.id}`, { user: OUTSIDER });
+    assert.equal(stillHidden.status, 404);
+    const outsiderBoot = await srv.api('GET', '/api/bootstrap', { user: OUTSIDER });
+    assert.ok(!JSON.stringify(outsiderBoot.body).includes(CONF_NAME));
+
+    // sponsorId also grants confidential read (fatou is otherwise unrelated to conf)
+    const cur = await srv.api('GET', `/api/projects/${conf.id}`, { user: USERS.troy });
+    const setSponsor = await srv.api('PATCH', `/api/projects/${conf.id}`, {
+      user: USERS.troy, body: { version: cur.body.version, sponsorId: USERS.fatou },
+    });
+    assert.equal(setSponsor.status, 200);
+    const asSponsor = await srv.api('GET', `/api/projects/${conf.id}`, { user: USERS.fatou });
+    assert.equal(asSponsor.status, 200);
+
+    // cleanup: drop the membership so later assertions stay meaningful
+    const del = await srv.api('DELETE', `/api/projects/${conf.id}/members/${USERS.ibrahima}/SME`, {
+      user: USERS.troy,
+    });
+    assert.equal(del.status, 204);
+    const goneAgain = await srv.api('GET', `/api/projects/${conf.id}`, { user: USERS.ibrahima });
+    assert.equal(goneAgain.status, 404);
+  });
+
   it('the VIEWER (management division) sees internal projects but not confidential/restricted ones', async () => {
     const res = await srv.api('GET', '/api/projects', { user: USERS.aissatou });
     assert.equal(res.status, 200);

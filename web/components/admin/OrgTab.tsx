@@ -11,7 +11,7 @@ import { api } from "@/lib/api";
 import { apiErrorMessage, useOrgTree } from "@/lib/orgData";
 import { cn, divisionMeta } from "@/lib/utils";
 import type { OrgDivision, OrgSite } from "@/lib/types";
-import { Dialog, DialogActions, Field, FormError, OfflineHint, Select, TextInput } from "@/components/Dialog";
+import { Dialog, DialogActions, Field, FormError, OfflineHint, TextInput } from "@/components/Dialog";
 import EmptyState from "@/components/EmptyState";
 import { SectionHeader } from "@/components/Headings";
 import { SkeletonList } from "@/components/Skeleton";
@@ -32,28 +32,24 @@ export default function OrgTab() {
   const [dialog, setDialog] = useState<DialogState>(null);
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
-  const [divisionId, setDivisionId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const open = (next: Exclude<DialogState, null>) => {
     setError(null);
     setSubmitting(false);
-    if (next.kind === "edit-division") {
+    if (next.kind === "edit-division" || next.kind === "edit-site") {
       setCode(next.unit.id);
       setName(next.unit.name);
-      setDivisionId("");
-    } else if (next.kind === "edit-site") {
-      setCode(next.unit.id);
-      setName(next.unit.name);
-      setDivisionId(next.unit.divisionId ?? "");
     } else {
       setCode("");
       setName("");
-      setDivisionId("");
     }
     setDialog(next);
   };
+
+  // Server contract: POST needs {code (a-z0-9-_ slug), name}; PATCH /:code takes {name}.
+  const CODE_RE = /^[a-z0-9][a-z0-9_-]*$/;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -62,30 +58,22 @@ export default function OrgTab() {
       setError("Name is required.");
       return;
     }
+    const isAdd = dialog.kind === "add-division" || dialog.kind === "add-site";
+    if (isAdd && !CODE_RE.test(code.trim())) {
+      setError("Code is required: short lowercase slug (letters, digits, -, _).");
+      return;
+    }
     setSubmitting(true);
     setError(null);
+    const base = dialog.kind.endsWith("division") ? "/api/divisions" : "/api/sites";
+    const label = dialog.kind.endsWith("division") ? "Division" : "Site";
     try {
-      if (dialog.kind === "add-division") {
-        await api("/api/divisions", {
-          method: "POST",
-          body: { id: code.trim() || undefined, name: name.trim() },
-        });
-        toast("Division added.", "success");
-      } else if (dialog.kind === "edit-division") {
-        await api(`/api/divisions/${dialog.unit.id}`, { method: "PATCH", body: { name: name.trim() } });
-        toast("Division updated.", "success");
-      } else if (dialog.kind === "add-site") {
-        await api("/api/sites", {
-          method: "POST",
-          body: { name: name.trim(), divisionId: divisionId || undefined },
-        });
-        toast("Site added.", "success");
+      if (isAdd) {
+        await api(base, { method: "POST", body: { code: code.trim(), name: name.trim() } });
+        toast(`${label} added.`, "success");
       } else {
-        await api(`/api/sites/${dialog.unit.id}`, {
-          method: "PATCH",
-          body: { name: name.trim(), divisionId: divisionId || undefined },
-        });
-        toast("Site updated.", "success");
+        await api(`${base}/${dialog.unit.id}`, { method: "PATCH", body: { name: name.trim() } });
+        toast(`${label} updated.`, "success");
       }
       setDialog(null);
       await reload();
@@ -197,13 +185,20 @@ export default function OrgTab() {
       {dialog && (
         <Dialog title={dialogTitle} onClose={() => setDialog(null)}>
           <form onSubmit={(e) => void submit(e)} noValidate className="space-y-4">
-            {dialog.kind === "add-division" && (
+            {(dialog.kind === "add-division" || dialog.kind === "add-site") && (
               <Field
                 label="Code"
                 htmlFor="org-code"
-                hint="Short identifier, e.g. ops (optional — server may generate one)."
+                hint="Short lowercase identifier, e.g. ops or dakar-hub. Immutable once in use."
               >
-                <TextInput id="org-code" value={code} onChange={(e) => setCode(e.target.value)} placeholder="e.g. ops" />
+                <TextInput
+                  id="org-code"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value.toLowerCase())}
+                  placeholder={dialog.kind === "add-division" ? "e.g. ops" : "e.g. dakar-hub"}
+                  autoFocus
+                  required
+                />
               </Field>
             )}
             <Field label="Name" htmlFor="org-name">
@@ -211,22 +206,10 @@ export default function OrgTab() {
                 id="org-name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                autoFocus
+                autoFocus={dialog.kind.startsWith("edit")}
                 required
               />
             </Field>
-            {(dialog.kind === "add-site" || dialog.kind === "edit-site") && tree.divisions.length > 0 && (
-              <Field label="Division" htmlFor="org-division" hint="Optional — sites may span divisions.">
-                <Select id="org-division" value={divisionId} onChange={(e) => setDivisionId(e.target.value)}>
-                  <option value="">No division</option>
-                  {tree.divisions.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-            )}
             <FormError error={error} />
             <DialogActions
               submitLabel={dialog.kind.startsWith("add") ? "Add" : "Save changes"}

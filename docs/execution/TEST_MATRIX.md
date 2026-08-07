@@ -2,7 +2,7 @@
 
 Command contract (§109 target): `npm test` per package today; root scripts to be added in E00 completion.
 
-**Current totals: server 67/67 GREEN (13 suites). Web: typed production build clean; browser auth smoke green (login/concealment/viewer read-only).**
+**Current totals: server 107/107 GREEN (19 suites). Web: typed production build clean; browser smokes green (auth flows + Admin Center + project codes/members). Slice-2 suites: org 7, portfolio 5, projectCodes 6 (incl. real-Postgres parallel allocation), members 9, enterpriseAccess 6, lifecycle 5.**
 
 | Area | Suite | State |
 |---|---|---|

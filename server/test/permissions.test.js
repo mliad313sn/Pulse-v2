@@ -41,15 +41,41 @@ describe('E03 — permission matrix', () => {
     }
   });
 
-  it('patch task: ADMIN, DIVISION_LEAD, CONTRIBUTOR allowed; VIEWER -> 403', async () => {
-    for (const [role, uid] of ROLES) {
-      const current = await srv.api('GET', `/api/tasks/${SEED.erpTask}`, { user: USERS.troy });
-      const res = await srv.api('PATCH', `/api/tasks/${SEED.erpTask}`, {
-        user: uid(),
+  it('patch task: ADMIN, DIVISION_LEAD (own division), CONTRIBUTOR (assignee) allowed; VIEWER -> 403', async () => {
+    // E04 write model: DIVISION_LEAD authority is scoped to the project's own
+    // division and a plain CONTRIBUTOR must be personally involved, so each
+    // role targets a task it legitimately holds the capability for.
+    const CASES = [
+      ['ADMIN', USERS.troy, SEED.erpTask, 200],
+      ['DIVISION_LEAD', USERS.moussa, SEED.infraTask, 200], // moussa leads infra; infraTask is infra
+      ['CONTRIBUTOR', USERS.ibrahima, SEED.erpTask, 200], // ibrahima is the assignee
+      ['VIEWER', USERS.aissatou, SEED.erpTask, 403],
+    ];
+    for (const [role, uid, taskId, expected] of CASES) {
+      const current = await srv.api('GET', `/api/tasks/${taskId}`, { user: USERS.troy });
+      const res = await srv.api('PATCH', `/api/tasks/${taskId}`, {
+        user: uid,
         body: { version: current.body.version, description: `touched by ${role}` },
       });
-      const expected = role === 'VIEWER' ? 403 : 200;
       assert.equal(res.status, expected, `patch task as ${role}`);
+    }
+  });
+
+  it('E04 tightening: uninvolved CONTRIBUTOR and cross-division DIVISION_LEAD get 403 on task writes', async () => {
+    const current = await srv.api('GET', `/api/tasks/${SEED.erpTask}`, { user: USERS.troy });
+    for (const [who, uid] of [['unrelated ops CONTRIBUTOR', USERS.awa], ['cross-division DIVISION_LEAD', USERS.fatou]]) {
+      const res = await srv.api('PATCH', `/api/tasks/${SEED.erpTask}`, {
+        user: uid,
+        body: { version: current.body.version, description: 'should be denied' },
+      });
+      assert.equal(res.status, 403, `${who} denied`);
+      assert.equal(res.body.error, 'FORBIDDEN');
+
+      const create = await srv.api('POST', '/api/tasks', {
+        user: uid,
+        body: { projectId: SEED.project3, title: 'smuggled task', assigneeId: uid },
+      });
+      assert.equal(create.status, 403, `${who} denied task create (even self-assigned)`);
     }
   });
 
