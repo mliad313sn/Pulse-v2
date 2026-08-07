@@ -22,7 +22,23 @@ const COLUMNS = {
     ownerId: 'owner_id', portfolioId: 'portfolio_id', programId: 'program_id',
     sponsorId: 'sponsor_id', lifecycleStage: 'lifecycle_stage',
     operatingStatus: 'operating_status', engagedDivisions: 'engaged_divisions', sites: 'sites',
+    startDate: 'start_date', targetDate: 'target_date', actualEndDate: 'actual_end_date',
+    acceptanceCriteria: 'acceptance_criteria', deploymentPlan: 'deployment_plan',
+    supportOwnerId: 'support_owner_id', closureSummary: 'closure_summary',
+    cancelReason: 'cancel_reason', holdReason: 'hold_reason',
     version: 'version', updatedAt: 'updated_at', createdAt: 'created_at',
+  },
+  milestone: {
+    id: 'id', projectId: 'project_id', title: 'title', description: 'description',
+    type: 'type', status: 'status', ownerId: 'owner_id',
+    baselineDue: 'baseline_due', forecastDue: 'forecast_due', actualCompleted: 'actual_completed',
+    weight: 'weight', version: 'version', updatedAt: 'updated_at', createdAt: 'created_at',
+  },
+  gateRequest: {
+    id: 'id', projectId: 'project_id', gate: 'gate', fromStage: 'from_stage',
+    toStage: 'to_stage', requestedBy: 'requested_by', requestedAt: 'requested_at',
+    note: 'note', dispositionNote: 'disposition_note', status: 'status',
+    decidedBy: 'decided_by', decidedAt: 'decided_at', decisionNote: 'decision_note',
   },
   pillar: {
     id: 'id', name: 'name', description: 'description',
@@ -57,7 +73,11 @@ const COLUMNS = {
 const toIso = (v) => (v instanceof Date ? v.toISOString() : v ?? null);
 
 // DATE (not timestamptz) columns — wire format is plain YYYY-MM-DD.
-const DATE_ONLY = { portfolio: new Set(['dateFrom', 'dateTo']) };
+const DATE_ONLY = {
+  portfolio: new Set(['dateFrom', 'dateTo']),
+  project: new Set(['startDate', 'targetDate', 'actualEndDate']),
+  milestone: new Set(['baselineDue', 'forecastDue', 'actualCompleted']),
+};
 
 function mapRow(kind, row) {
   if (!row) return null;
@@ -387,6 +407,36 @@ class PgQueries {
       params,
     );
     return mapRow(kind, rows[0] ?? null);
+  }
+
+  // ---- approval ledger (E05 — push-only, invariant 11) ---------------------
+  // No update/delete method exists; trg_approval_ledger_immutable is the
+  // database backstop.
+  async appendLedger(entry) {
+    const { rows } = await this._query(
+      `INSERT INTO approval_ledger
+         (project_id, gate, from_stage, to_stage, project_version,
+          requested_by, requested_at, decided_by, decided_at, authority_type, decision, note)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+      [entry.projectId, entry.gate, entry.fromStage, entry.toStage, entry.projectVersion,
+       entry.requestedBy, entry.requestedAt, entry.decidedBy, entry.decidedAt,
+       entry.authorityType, entry.decision, entry.note ?? null],
+    );
+    return mapLedger(rows[0]);
+  }
+
+  async listLedger(filter = {}) {
+    const where = [];
+    const params = [];
+    if (filter.projectId !== undefined) {
+      params.push(filter.projectId);
+      where.push(`project_id = $${params.length}`);
+    }
+    const { rows } = await this._query(
+      `SELECT * FROM approval_ledger${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at, decided_at`,
+      params,
+    );
+    return rows.map(mapLedger);
   }
 
   // ---- audit (written by DB triggers; read-only here) ----------------------
