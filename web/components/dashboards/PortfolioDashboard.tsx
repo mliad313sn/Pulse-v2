@@ -5,6 +5,7 @@
 import { useApp } from "@/lib/store";
 import ProjectCard from "@/components/ProjectCard";
 import EmptyState from "@/components/EmptyState";
+import NewProjectButton from "@/components/NewProjectButton";
 import { PageHeader, SectionHeader } from "@/components/Headings";
 import { SkeletonList } from "@/components/Skeleton";
 import { divisionMeta } from "@/lib/utils";
@@ -28,8 +29,10 @@ export default function PortfolioDashboard() {
   return (
     <div>
       <PageHeader
+        className="mb-6 items-end"
         title="Portfolio"
         subtitle={`${meta.label} view · strategic and CGEIT tags shown on every project.`}
+        action={<NewProjectButton />}
       />
 
       {mine.length > 0 && (

@@ -5,6 +5,7 @@
  * + version bump). Deep-clones on read and write so callers can never alias
  * internal state. Audit is an immutable push-only ledger.
  */
+import { randomUUID } from 'node:crypto';
 import { createAuditLedger } from '../services/audit.js';
 import { TABLES } from './tables.js';
 
@@ -20,11 +21,20 @@ export const DIVISIONS = [
   { code: 'management', name: 'Group IT Management', description: 'Executive oversight' },
 ];
 
+export const SITES = [
+  { code: 'sabodala', name: 'Sabodala Mine Site', description: null },
+  { code: 'saly', name: 'Saly Site', description: null },
+  { code: 'hq', name: 'Group IT HQ', description: null },
+];
+
 function seedFixtures() {
   const t0 = new Date(Date.now() - 24 * 3600 * 1000).toISOString(); // "yesterday"
   const u = (n) => `00000000-0000-0000-0000-00000000000${n}`;
 
-  const base = { privileges: [], isActive: true, mustChangePassword: false, createdAt: t0 };
+  const base = {
+    privileges: [], isActive: true, mustChangePassword: false,
+    enterpriseAccess: true, createdAt: t0,
+  };
   // Base roles per ADR-004 mapping — keep in sync with db/init/02_seed.sql.
   const users = [
     { id: u(1), name: 'Awa Ndiaye', email: 'awa.ndiaye@opspm360.local', division: 'ops', site: 'sabodala', baseRole: 'CONTRIBUTOR', ...base },
@@ -50,32 +60,41 @@ function seedFixtures() {
     { userId: u(8), passwordHash: '$2b$10$60lEYqbFOashKXtg0YavEO/RpGgYqbKHkiHf3/oUkH7LvWi8N3jra' }, // Dev!Aissatou2026
   ].map((c) => ({ ...c, failedCount: 0, firstFailedAt: null, lockedUntil: null, updatedAt: t0 }));
 
+  // E04 project fields shared by every seed row (mirrors the SQL defaults).
+  const projBase = {
+    portfolioId: null, programId: null, sponsorId: null,
+    lifecycleStage: 'IDEA', operatingStatus: 'NOT_STARTED',
+    engagedDivisions: [], sites: [],
+  };
   const projects = [
     {
       id: '10000000-0000-0000-0000-000000000001',
+      code: 'PRJ-2026-001',
       name: 'Saly Site Readiness',
       description: 'Physical site preparation: cabling paths, server room environmentals, power.',
       division: 'ops', site: 'saly', cgeitTag: 'resource_optimization', strategicTag: null,
       riskTags: [], classification: 'internal', overallStatus: 'active', securityGateStatus: 'not_required',
-      ownerId: u(1), version: 1, updatedAt: t0, createdAt: t0,
+      ownerId: u(1), ...projBase, version: 1, updatedAt: t0, createdAt: t0,
     },
     {
       // DB trigger route_security_review fired at seed time:
       // gate -> pending, version 1 -> 2, pending approval created below.
       id: '10000000-0000-0000-0000-000000000002',
+      code: 'PRJ-2026-002',
       name: 'Saly Core Network Deployment',
       description: 'New core switching and WAN uplink for Saly site.',
       division: 'infra', site: 'saly', cgeitTag: 'risk_optimization', strategicTag: 'EA-BLUEPRINT-NET-2026',
       riskTags: ['network_alteration'], classification: 'internal', overallStatus: 'active', securityGateStatus: 'pending',
-      ownerId: u(2), version: 2, updatedAt: t0, createdAt: t0,
+      ownerId: u(2), ...projBase, version: 2, updatedAt: t0, createdAt: t0,
     },
     {
       id: '10000000-0000-0000-0000-000000000003',
+      code: 'PRJ-2026-003',
       name: 'ERP Maintenance Module Rollout',
       description: 'Deploy ERP maintenance planning module once operational bandwidth allows.',
       division: 'bizapps', site: 'sabodala', cgeitTag: 'value_delivery', strategicTag: null,
       riskTags: [], classification: 'internal', overallStatus: 'active', securityGateStatus: 'not_required',
-      ownerId: u(6), version: 1, updatedAt: t0, createdAt: t0,
+      ownerId: u(6), ...projBase, version: 1, updatedAt: t0, createdAt: t0,
     },
   ];
 
@@ -146,7 +165,24 @@ export class MemoryRepo {
       task: seed.tasks,
       roadblock: seed.roadblocks,
       approval: seed.approvals,
+      pillar: [],
+      portfolio: [],
+      program: [],
     };
+    this._members = []; // project membership rows (E04)
+    // Reference data is per-instance state (admin CRUD mutates it).
+    this._divisions = clone(DIVISIONS);
+    this._sites = clone(SITES);
+    // Per-year PRJ-YYYY-NNN counters, derived from the seeded project codes so
+    // the next create in 2026 yields PRJ-2026-004 (mirrors project_code_sequences).
+    this._codeSeq = new Map();
+    for (const p of seed.projects) {
+      const m = /^PRJ-(\d{4})-(\d+)$/.exec(p.code ?? '');
+      if (m) {
+        const year = Number(m[1]);
+        this._codeSeq.set(year, Math.max(this._codeSeq.get(year) ?? 0, Number(m[2])));
+      }
+    }
     this._syncQueue = [];
     this._syncById = new Map();
     this._syncSeq = 0;
@@ -177,9 +213,115 @@ export class MemoryRepo {
     });
   }
 
-  // ---- reference data ------------------------------------------------------
+  // ---- reference data (E01 org admin) --------------------------------------
   async listDivisions() {
-    return clone(DIVISIONS);
+    return clone(this._divisions);
+  }
+
+  async listSites() {
+    return clone(this._sites);
+  }
+
+  _upsertRefRow(table, kind, row, { isNew }) {
+    const idx = table.findIndex((r) => r.code === row.code);
+    if (isNew) {
+      if (idx !== -1) throw new Error(`MemoryRepo: duplicate ${kind} code ${row.code}`);
+      const stored = clone(row);
+      table.push(stored);
+      this.audit.append({
+        entityType: kind, entityId: null, action: 'INSERT', actorId: this._actor,
+        cgeitTag: null, oldData: null, newData: stored,
+      });
+      return clone(stored);
+    }
+    if (idx === -1) throw new Error(`MemoryRepo: cannot update missing ${kind} ${row.code}`);
+    const old = table[idx];
+    const stored = clone(row);
+    table[idx] = stored;
+    this.audit.append({
+      entityType: kind, entityId: null, action: 'UPDATE', actorId: this._actor,
+      cgeitTag: null, oldData: old, newData: stored,
+    });
+    return clone(stored);
+  }
+
+  async insertSite(site) {
+    return this._upsertRefRow(this._sites, 'sites', site, { isNew: true });
+  }
+
+  /** Updates the site addressed by `code` (which may itself be renamed to row.code). */
+  async updateSite(code, row) {
+    const idx = this._sites.findIndex((s) => s.code === code);
+    if (idx === -1) throw new Error(`MemoryRepo: cannot update missing site ${code}`);
+    const old = this._sites[idx];
+    const stored = clone(row);
+    this._sites[idx] = stored;
+    this.audit.append({
+      entityType: 'sites', entityId: null, action: 'UPDATE', actorId: this._actor,
+      cgeitTag: null, oldData: old, newData: stored,
+    });
+    return clone(stored);
+  }
+
+  async insertDivision(division) {
+    return this._upsertRefRow(this._divisions, 'divisions', division, { isNew: true });
+  }
+
+  async updateDivision(code, row) {
+    const idx = this._divisions.findIndex((d) => d.code === code);
+    if (idx === -1) throw new Error(`MemoryRepo: cannot update missing division ${code}`);
+    const old = this._divisions[idx];
+    const stored = clone(row);
+    this._divisions[idx] = stored;
+    this.audit.append({
+      entityType: 'divisions', entityId: null, action: 'UPDATE', actorId: this._actor,
+      cgeitTag: null, oldData: old, newData: stored,
+    });
+    return clone(stored);
+  }
+
+  // ---- project codes (E04) -------------------------------------------------
+  /**
+   * Concurrency-safe per-year sequence (mirrors project_code_sequences with
+   * SELECT ... FOR UPDATE in Postgres). The increment is a single synchronous
+   * step, so interleaved async creates can never observe the same value.
+   */
+  async nextProjectCodeSeq(year) {
+    const next = (this._codeSeq.get(year) ?? 0) + 1;
+    this._codeSeq.set(year, next);
+    return next;
+  }
+
+  // ---- project membership (E04) --------------------------------------------
+  /** All membership rows, or only the given project's when projectId is set. */
+  async listProjectMembers(projectId) {
+    const rows = projectId === undefined
+      ? this._members
+      : this._members.filter((m) => m.projectId === projectId);
+    return clone(rows);
+  }
+
+  async insertProjectMember({ projectId, userId, role }) {
+    if (this._members.some((m) => m.projectId === projectId && m.userId === userId && m.role === role)) {
+      throw new Error(`MemoryRepo: duplicate project member ${projectId}/${userId}/${role}`);
+    }
+    const stored = {
+      id: randomUUID(), projectId, userId, role, createdAt: new Date().toISOString(),
+    };
+    this._members.push(stored);
+    this._recordAudit('INSERT', 'member', null, stored);
+    return clone(stored);
+  }
+
+  /** @returns {boolean} whether a row was removed (audited as DELETE). */
+  async deleteProjectMember(projectId, userId, role) {
+    const idx = this._members.findIndex(
+      (m) => m.projectId === projectId && m.userId === userId && m.role === role,
+    );
+    if (idx === -1) return false;
+    const [old] = this._members.splice(idx, 1);
+    this._recordAudit('DELETE', 'member', old, null);
+    return true;
   }
 
   // ---- users ---------------------------------------------------------------
@@ -273,6 +415,7 @@ export class MemoryRepo {
   async list(kind, filter = {}) {
     let rows = this._table(kind);
     if (filter.projectId !== undefined) rows = rows.filter((r) => r.projectId === filter.projectId);
+    if (filter.portfolioId !== undefined) rows = rows.filter((r) => r.portfolioId === filter.portfolioId);
     if (filter.status !== undefined) rows = rows.filter((r) => r.status === filter.status);
     return clone(rows);
   }

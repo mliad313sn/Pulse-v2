@@ -4,4 +4,8 @@ export const TABLES = {
   task: 'tasks',
   roadblock: 'roadblocks',
   approval: 'security_approvals',
+  pillar: 'strategic_pillars',
+  portfolio: 'portfolios',
+  program: 'programs',
+  member: 'project_members',
 };

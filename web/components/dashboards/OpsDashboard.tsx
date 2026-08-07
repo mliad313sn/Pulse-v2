@@ -8,6 +8,7 @@ import { useMemo, useState } from "react";
 import { useApp } from "@/lib/store";
 import TaskCard from "@/components/TaskCard";
 import LogRoadblockButton from "@/components/LogRoadblockButton";
+import NewProjectButton from "@/components/NewProjectButton";
 import EmptyState from "@/components/EmptyState";
 import { PageHeader } from "@/components/Headings";
 import { ChevronDownIcon } from "@/components/Icons";
@@ -36,8 +37,10 @@ export default function OpsDashboard() {
   return (
     <div className="mx-auto max-w-xl">
       <PageHeader
+        className="mb-6 items-end"
         title="My site tasks"
         subtitle={`Zen Mode${user?.site ? ` · ${user.site}` : ""} · ${open.length} open`}
+        action={<NewProjectButton />}
       />
 
       {canWrite && (

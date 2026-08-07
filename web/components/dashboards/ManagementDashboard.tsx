@@ -9,6 +9,7 @@ import { apiBlob } from "@/lib/api";
 import { cn, divisionMeta, DIVISION_META, PROJECT_STATUS_META } from "@/lib/utils";
 import type { Project, ProjectStatus } from "@/lib/types";
 import ProjectCard from "@/components/ProjectCard";
+import NewProjectButton from "@/components/NewProjectButton";
 import { Pill } from "@/components/Badges";
 import { PageHeader, SectionHeader } from "@/components/Headings";
 import { DownloadIcon } from "@/components/Icons";
@@ -113,7 +114,8 @@ export default function ManagementDashboard() {
           </>
         }
         action={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            <NewProjectButton />
             <button
               type="button"
               disabled={downloading !== null}

@@ -3,10 +3,14 @@
  * Each operation is recorded into sync_queue, then processed with OCC + LWW,
  * governance gates, and security routing — per the contract.
  */
-import { ApiError, validation } from '../errors.js';
+import { ApiError, forbidden, validation } from '../errors.js';
 import { applyUpdate } from './occ.js';
-import { ENTITY_DEFS, assertEnums, createEntity, pickWritable, runTaskGates } from './entityOps.js';
-import { canReadProject } from './policy.js';
+import {
+  ENTITY_DEFS, assertEnums, assertImmutableFields, assertOperationalWrite,
+  assertProjectRefs, createEntity, pickWritable, runTaskGates,
+} from './entityOps.js';
+import { assertLifecycleStep } from './gates.js';
+import { assertCan, canReadProject, canSetClassification } from './policy.js';
 import { ensureSecurityRouting } from './securityRouting.js';
 
 const ENTITIES = ['task', 'project', 'roadblock'];
@@ -76,6 +80,8 @@ async function processOperation(repo, user, op) {
   const kind = op.entity;
 
   if (op.op === 'create') {
+    // Same role wall as the REST route: project creation is ADMIN/DIVISION_LEAD.
+    if (kind === 'project') assertCan(user, 'project:create');
     if (op.entityId) {
       const existing = await repo.get(kind, op.entityId);
       if (existing) {
@@ -94,15 +100,31 @@ async function processOperation(repo, user, op) {
     const scopeProject = current
       ? (kind === 'project' ? current : await repo.get('project', current.projectId))
       : null;
-    if (!current || (scopeProject && !canReadProject(user, scopeProject))) {
+    const members = scopeProject ? await repo.listProjectMembers(scopeProject.id) : [];
+    if (!current || (scopeProject && !canReadProject(user, scopeProject, members))) {
       return { result: 'rejected', entityId: op.entityId ?? null, error: 'NOT_FOUND', serverState: null };
     }
 
+    // E04 membership-based write policy — surfaces as `rejected`/FORBIDDEN.
+    assertOperationalWrite(user, kind, current, scopeProject, members);
+
     const def = ENTITY_DEFS[kind];
+    assertImmutableFields(def, current, op.fields ?? {});
     const fields = pickWritable(def, op.fields ?? {});
     // Enum violations surface as `rejected` with error VALIDATION via the
     // ApiError handling in processSyncBatch.
     assertEnums(def, fields);
+    if (kind === 'project') {
+      if (fields.lifecycleStage !== undefined && fields.lifecycleStage !== current.lifecycleStage) {
+        assertLifecycleStep(current.lifecycleStage, fields.lifecycleStage);
+      }
+      // Classification changes stay ADMIN-only through sync as well.
+      if (fields.classification !== undefined && fields.classification !== current.classification
+          && !canSetClassification(user)) {
+        throw forbidden('Only ADMIN may set or change a project classification');
+      }
+      await assertProjectRefs(repo, fields);
+    }
 
     const { outcome, next } = applyUpdate(current, {
       baseVersion: op.baseVersion,

@@ -6,7 +6,7 @@
  * layer runs the same checks first to produce friendly typed errors.
  */
 import pg from 'pg';
-import { dependencyLocked, forbidden, securityGate } from '../errors.js';
+import { dependencyLocked, forbidden, securityGate, validation } from '../errors.js';
 import { TABLES } from './tables.js';
 
 const { Pool } = pg;
@@ -14,11 +14,28 @@ const { Pool } = pg;
 // camelCase (wire/service) -> snake_case (db) per entity kind.
 const COLUMNS = {
   project: {
-    id: 'id', name: 'name', description: 'description', division: 'division', site: 'site',
+    id: 'id', code: 'code', name: 'name', description: 'description',
+    division: 'division', site: 'site',
     cgeitTag: 'cgeit_tag', strategicTag: 'strategic_tag', riskTags: 'risk_tags',
     classification: 'classification',
     overallStatus: 'overall_status', securityGateStatus: 'security_gate_status',
-    ownerId: 'owner_id', version: 'version', updatedAt: 'updated_at', createdAt: 'created_at',
+    ownerId: 'owner_id', portfolioId: 'portfolio_id', programId: 'program_id',
+    sponsorId: 'sponsor_id', lifecycleStage: 'lifecycle_stage',
+    operatingStatus: 'operating_status', engagedDivisions: 'engaged_divisions', sites: 'sites',
+    version: 'version', updatedAt: 'updated_at', createdAt: 'created_at',
+  },
+  pillar: {
+    id: 'id', name: 'name', description: 'description',
+    updatedAt: 'updated_at', createdAt: 'created_at',
+  },
+  portfolio: {
+    id: 'id', title: 'title', description: 'description', pillarId: 'pillar_id',
+    ownerId: 'owner_id', dateFrom: 'date_from', dateTo: 'date_to',
+    updatedAt: 'updated_at', createdAt: 'created_at',
+  },
+  program: {
+    id: 'id', title: 'title', objective: 'objective', portfolioId: 'portfolio_id',
+    ownerId: 'owner_id', updatedAt: 'updated_at', createdAt: 'created_at',
   },
   task: {
     id: 'id', projectId: 'project_id', title: 'title', description: 'description',
@@ -39,12 +56,16 @@ const COLUMNS = {
 
 const toIso = (v) => (v instanceof Date ? v.toISOString() : v ?? null);
 
+// DATE (not timestamptz) columns — wire format is plain YYYY-MM-DD.
+const DATE_ONLY = { portfolio: new Set(['dateFrom', 'dateTo']) };
+
 function mapRow(kind, row) {
   if (!row) return null;
+  const dateOnly = DATE_ONLY[kind];
   const out = {};
   for (const [camel, snake] of Object.entries(COLUMNS[kind])) {
     let v = row[snake];
-    if (v instanceof Date) v = v.toISOString();
+    if (v instanceof Date) v = dateOnly?.has(camel) ? v.toISOString().slice(0, 10) : v.toISOString();
     out[camel] = v === undefined ? null : v;
   }
   return out;
@@ -57,6 +78,15 @@ function mapUser(row) {
     division: row.division, site: row.site,
     baseRole: row.base_role, privileges: row.privileges ?? [],
     isActive: row.is_active, mustChangePassword: row.must_change_password,
+    enterpriseAccess: row.enterprise_access !== false,
+    createdAt: toIso(row.created_at),
+  };
+}
+
+function mapMember(row) {
+  if (!row) return null;
+  return {
+    id: row.id, projectId: row.project_id, userId: row.user_id, role: row.role,
     createdAt: toIso(row.created_at),
   };
 }
@@ -84,6 +114,10 @@ function translateDbError(err) {
   const msg = String(err?.message ?? '');
   if (msg.includes('DEPENDENCY_LOCKED')) return dependencyLocked();
   if (msg.includes('SECURITY_GATE')) return securityGate();
+  if (msg.includes('PROJECT_CODE_IMMUTABLE')) return validation('Project code is server-generated and immutable');
+  if (msg.includes('VIEWER_CANNOT_LEAD')) {
+    return validation('VIEWER users cannot be assigned PM or WORKSTREAM_LEAD');
+  }
   if (msg.includes('immutable ledger')) return forbidden('audit_logs is an immutable ledger');
   return err;
 }
@@ -102,10 +136,91 @@ class PgQueries {
     }
   }
 
-  // ---- reference data ------------------------------------------------------
+  // ---- reference data (E01 org admin) --------------------------------------
   async listDivisions() {
-    const { rows } = await this._query('SELECT code, name FROM divisions ORDER BY code');
+    const { rows } = await this._query('SELECT code, name, description FROM divisions ORDER BY code');
     return rows;
+  }
+
+  async listSites() {
+    const { rows } = await this._query('SELECT code, name, description FROM sites ORDER BY code');
+    return rows;
+  }
+
+  async insertSite(site) {
+    const { rows } = await this._query(
+      'INSERT INTO sites (code, name, description) VALUES ($1, $2, $3) RETURNING code, name, description',
+      [site.code, site.name, site.description ?? null],
+    );
+    return rows[0];
+  }
+
+  async updateSite(code, row) {
+    const { rows } = await this._query(
+      'UPDATE sites SET code = $2, name = $3, description = $4 WHERE code = $1 RETURNING code, name, description',
+      [code, row.code, row.name, row.description ?? null],
+    );
+    return rows[0] ?? null;
+  }
+
+  async insertDivision(division) {
+    const { rows } = await this._query(
+      'INSERT INTO divisions (code, name, description) VALUES ($1, $2, $3) RETURNING code, name, description',
+      [division.code, division.name, division.description ?? null],
+    );
+    return rows[0];
+  }
+
+  async updateDivision(code, row) {
+    const { rows } = await this._query(
+      'UPDATE divisions SET code = $2, name = $3, description = $4 WHERE code = $1 RETURNING code, name, description',
+      [code, row.code, row.name, row.description ?? null],
+    );
+    return rows[0] ?? null;
+  }
+
+  // ---- project codes (E04) -------------------------------------------------
+  /**
+   * Concurrency-safe PRJ-YYYY-NNN allocation: the per-year row is locked with
+   * SELECT ... FOR UPDATE inside the surrounding create transaction, then
+   * incremented — never max()+1 over projects.
+   */
+  async nextProjectCodeSeq(year) {
+    await this._query(
+      'INSERT INTO project_code_sequences (year, last_value) VALUES ($1, 0) ON CONFLICT (year) DO NOTHING',
+      [year],
+    );
+    await this._query('SELECT last_value FROM project_code_sequences WHERE year = $1 FOR UPDATE', [year]);
+    const { rows } = await this._query(
+      'UPDATE project_code_sequences SET last_value = last_value + 1 WHERE year = $1 RETURNING last_value',
+      [year],
+    );
+    return Number(rows[0].last_value);
+  }
+
+  // ---- project membership (E04) --------------------------------------------
+  async listProjectMembers(projectId) {
+    const sql = projectId === undefined
+      ? 'SELECT * FROM project_members ORDER BY created_at, role'
+      : 'SELECT * FROM project_members WHERE project_id = $1 ORDER BY created_at, role';
+    const { rows } = await this._query(sql, projectId === undefined ? [] : [projectId]);
+    return rows.map(mapMember);
+  }
+
+  async insertProjectMember({ projectId, userId, role }) {
+    const { rows } = await this._query(
+      'INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, $3) RETURNING *',
+      [projectId, userId, role],
+    );
+    return mapMember(rows[0]);
+  }
+
+  async deleteProjectMember(projectId, userId, role) {
+    const { rowCount } = await this._query(
+      'DELETE FROM project_members WHERE project_id = $1 AND user_id = $2 AND role = $3',
+      [projectId, userId, role],
+    );
+    return rowCount > 0;
   }
 
   // ---- users ---------------------------------------------------------------
@@ -126,10 +241,11 @@ class PgQueries {
 
   async insertUser(user) {
     const { rows } = await this._query(
-      `INSERT INTO users (id, name, email, division, site, base_role, privileges, is_active, must_change_password)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      `INSERT INTO users (id, name, email, division, site, base_role, privileges, is_active, must_change_password, enterprise_access)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
       [user.id, user.name, user.email, user.division, user.site ?? null,
-       user.baseRole, user.privileges ?? [], user.isActive !== false, user.mustChangePassword === true],
+       user.baseRole, user.privileges ?? [], user.isActive !== false, user.mustChangePassword === true,
+       user.enterpriseAccess !== false],
     );
     return mapUser(rows[0]);
   }
@@ -137,10 +253,12 @@ class PgQueries {
   async updateUser(user) {
     const { rows } = await this._query(
       `UPDATE users SET name = $2, email = $3, division = $4, site = $5,
-              base_role = $6, privileges = $7, is_active = $8, must_change_password = $9
+              base_role = $6, privileges = $7, is_active = $8, must_change_password = $9,
+              enterprise_access = $10
        WHERE id = $1 RETURNING *`,
       [user.id, user.name, user.email, user.division, user.site ?? null,
-       user.baseRole, user.privileges ?? [], user.isActive !== false, user.mustChangePassword === true],
+       user.baseRole, user.privileges ?? [], user.isActive !== false, user.mustChangePassword === true,
+       user.enterpriseAccess !== false],
     );
     return mapUser(rows[0] ?? null);
   }
@@ -216,6 +334,10 @@ class PgQueries {
     if (filter.projectId !== undefined) {
       params.push(filter.projectId);
       where.push(`${cols.projectId} = $${params.length}`);
+    }
+    if (filter.portfolioId !== undefined) {
+      params.push(filter.portfolioId);
+      where.push(`${cols.portfolioId} = $${params.length}`);
     }
     if (filter.status !== undefined) {
       params.push(filter.status);

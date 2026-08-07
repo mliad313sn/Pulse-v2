@@ -33,6 +33,14 @@ export interface User {
   division: Division;
   site?: string | null;
   email?: string;
+  /** Optional only for stale local caches — the server always sends it. */
+  enterpriseAccess?: boolean;
+}
+
+/** POST /api/users response — the temporary password is shown ONCE, never stored. */
+export interface CreateUserResponse {
+  user: User;
+  temporaryPassword: string;
 }
 
 /** POST /api/auth/login response. */
@@ -43,10 +51,28 @@ export interface LoginResponse {
 
 export type ProjectClassification = "internal" | "restricted" | "confidential";
 
+export type LifecycleStage =
+  | "IDEA"
+  | "INITIATION"
+  | "PLANNING"
+  | "EXECUTION"
+  | "DEPLOYMENT"
+  | "RUN"
+  | "CLOSED";
+
+export type OperatingStatus =
+  | "NOT_STARTED"
+  | "IN_PROGRESS"
+  | "ON_HOLD"
+  | "COMPLETED"
+  | "CANCELLED";
+
 export interface Project {
   id: string;
   name: string;
   description?: string | null;
+  /** Server-generated PRJ-YYYY-NNN code. Optional only for stale local caches. */
+  code?: string;
   division: Division;
   site?: string | null;
   cgeitTag?: string | null;
@@ -57,9 +83,87 @@ export interface Project {
   overallStatus: ProjectStatus;
   securityGateStatus: SecurityGateStatus;
   ownerId?: string | null;
+  portfolioId?: string | null;
+  programId?: string | null;
+  sponsorId?: string | null;
+  pmId?: string | null;
+  /** Optional only for stale local caches — the server always sends them. */
+  lifecycleStage?: LifecycleStage;
+  operatingStatus?: OperatingStatus;
+  engagedDivisions?: string[];
+  sites?: string[];
   version: number;
   updatedAt: string;
   createdAt?: string;
+}
+
+// ---- Portfolio hierarchy (Wave 1 slice 2) ----------------------------------
+
+export interface StrategicPillar {
+  id: string;
+  name: string;
+  description?: string | null;
+}
+
+export interface Portfolio {
+  id: string;
+  title: string;
+  description?: string | null;
+  pillarId?: string | null;
+  ownerId?: string | null;
+  dateFrom?: string | null;
+  dateTo?: string | null;
+}
+
+export interface Program {
+  id: string;
+  title: string;
+  objective?: string | null;
+  portfolioId: string;
+  ownerId?: string | null;
+}
+
+export type ProjectRole =
+  | "PM"
+  | "SPONSOR"
+  | "WORKSTREAM_LEAD"
+  | "CONTRIBUTOR"
+  | "SME"
+  | "FINANCE_CONTROLLER"
+  | "SECURITY_REVIEWER"
+  | "SITE_LEAD"
+  | "AUDITOR"
+  | "APPROVER"
+  | "INFORMED";
+
+export interface ProjectMember {
+  projectId: string;
+  userId: string;
+  role: ProjectRole;
+}
+
+// GET /api/org/tree — sites + divisions for the Admin Center Organization tab.
+// Shape kept tolerant: sites may arrive nested under divisions or top-level.
+
+export interface OrgSite {
+  id: string;
+  name: string;
+  divisionId?: string | null;
+  isActive?: boolean;
+  [key: string]: unknown;
+}
+
+export interface OrgDivision {
+  id: string;
+  name: string;
+  sites?: OrgSite[];
+  isActive?: boolean;
+  [key: string]: unknown;
+}
+
+export interface OrgTree {
+  divisions: OrgDivision[];
+  sites: OrgSite[];
 }
 
 export interface Task {

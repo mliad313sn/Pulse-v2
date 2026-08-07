@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { asyncHandler } from './middleware.js';
-import { withLocked, withLockedOne, preferUserSite, mountEntityCrud } from './helpers.js';
+import { loadProjectAccess, withLocked, withLockedOne, preferUserSite, mountEntityCrud } from './helpers.js';
 import { readableProjectIds, assertReadProject } from '../services/policy.js';
 import { notFound } from '../errors.js';
 
@@ -10,9 +10,12 @@ export function tasksRouter() {
   router.get('/', asyncHandler(async (req, res) => {
     const repo = req.app.locals.repo;
     const filter = req.query.projectId ? { projectId: req.query.projectId } : {};
-    const [tasks, projects] = await Promise.all([repo.list('task', filter), repo.list('project')]);
-    // ADR-005: tasks of concealed projects are absent from every list.
-    const visible = readableProjectIds(req.user, projects);
+    const [tasks, { projects, membersByProject }] = await Promise.all([
+      repo.list('task', filter), loadProjectAccess(repo),
+    ]);
+    // ADR-005 + E01 enterprise access: tasks of concealed projects are absent
+    // from every list.
+    const visible = readableProjectIds(req.user, projects, membersByProject);
     const scoped = tasks.filter((t) => visible.has(t.projectId));
     res.json(preferUserSite(await withLocked(repo, scoped, { projects }), req.user));
   }));
@@ -22,8 +25,9 @@ export function tasksRouter() {
     const task = await repo.get('task', req.params.id);
     if (!task) throw notFound(`task ${req.params.id} not found`);
     const project = await repo.get('project', task.projectId);
+    const members = project ? await repo.listProjectMembers(project.id) : [];
     // ADR-005 concealment: same 404 as a missing task id.
-    assertReadProject(req.user, project, 'task', req.params.id);
+    assertReadProject(req.user, project, 'task', req.params.id, members);
     res.json(await withLockedOne(repo, task));
   }));
 

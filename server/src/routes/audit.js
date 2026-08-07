@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { asyncHandler } from './middleware.js';
+import { loadProjectAccess } from './helpers.js';
 import { readableProjectIds } from '../services/policy.js';
 
 /** projectId of an audit entry's subject, tolerant of camelCase (memory)
@@ -9,7 +10,7 @@ function auditProjectId(entry) {
   return data.projectId ?? data.project_id ?? null;
 }
 
-const PROJECT_SCOPED_TYPES = new Set(['tasks', 'roadblocks', 'security_approvals']);
+const PROJECT_SCOPED_TYPES = new Set(['tasks', 'roadblocks', 'security_approvals', 'project_members']);
 
 /** GET /api/audit?entityId= — read-only audit trail. */
 export function auditRouter() {
@@ -19,13 +20,14 @@ export function auditRouter() {
     const filter = {};
     if (req.query.entityId) filter.entityId = req.query.entityId;
     if (req.query.entityType) filter.entityType = req.query.entityType;
-    const [entries, projects] = await Promise.all([
+    const [entries, { projects, membersByProject }] = await Promise.all([
       repo.listAudit(filter),
-      repo.list('project'),
+      loadProjectAccess(repo),
     ]);
-    // ADR-005: audit rows about concealed projects (or their children) are
-    // filtered out — audit-by-entity must not confirm existence.
-    const visible = readableProjectIds(req.user, projects);
+    // ADR-005 + E01 enterprise access: audit rows about concealed projects
+    // (or their children) are filtered out — audit-by-entity must not confirm
+    // existence.
+    const visible = readableProjectIds(req.user, projects, membersByProject);
     const existing = new Set(projects.map((p) => p.id));
     res.json(entries.filter((e) => {
       if (e.entityType === 'projects') {

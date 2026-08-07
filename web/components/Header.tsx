@@ -7,6 +7,7 @@ import { baseRoleLabel, cn, divisionMeta, initials, safeLocalSet } from "@/lib/u
 import {
   CloudIcon,
   CloudOffIcon,
+  CogIcon,
   EyeIcon,
   KeyIcon,
   LogoutIcon,
@@ -200,6 +201,15 @@ export default function Header() {
                 >
                   <ShieldIcon className="h-4 w-4" />
                   Approvals
+                </Link>
+              )}
+              {user.baseRole === "ADMIN" && (
+                <Link
+                  href="/admin"
+                  className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-700/60 dark:hover:text-white"
+                >
+                  <CogIcon className="h-4 w-4" />
+                  Admin
                 </Link>
               )}
               {conflicts.length > 0 && (

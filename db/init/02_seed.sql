@@ -37,17 +37,23 @@ INSERT INTO user_credentials (user_id, password_hash) VALUES
     ('00000000-0000-0000-0000-000000000007', '$2b$10$gA8k1kzBqRJPQUh.tZvd3uoBy2XLL3eeA8i.WGedvn8qJG07hadIO'),
     ('00000000-0000-0000-0000-000000000008', '$2b$10$60lEYqbFOashKXtg0YavEO/RpGgYqbKHkiHf3/oUkH7LvWi8N3jra');
 
+-- Project codes are server-generated PRJ-YYYY-NNN; the seed backfills the
+-- 2026 sequence so the next created project becomes PRJ-2026-004.
+INSERT INTO project_code_sequences (year, last_value) VALUES (2026, 3);
+
 -- Project 1: Ops site prep at Saly (prerequisite for Infra rollout)
-INSERT INTO projects (id, name, description, division, site, cgeit_tag, overall_status, owner_id) VALUES
+INSERT INTO projects (id, code, name, description, division, site, cgeit_tag, overall_status, owner_id) VALUES
     ('10000000-0000-0000-0000-000000000001',
+     'PRJ-2026-001',
      'Saly Site Readiness',
      'Physical site preparation: cabling paths, server room environmentals, power.',
      'ops', 'saly', 'resource_optimization', 'active',
      '00000000-0000-0000-0000-000000000001');
 
 -- Project 2: Infra network deployment at Saly (network-altering -> InfoSec gate fires)
-INSERT INTO projects (id, name, description, division, site, cgeit_tag, strategic_tag, risk_tags, overall_status, owner_id) VALUES
+INSERT INTO projects (id, code, name, description, division, site, cgeit_tag, strategic_tag, risk_tags, overall_status, owner_id) VALUES
     ('10000000-0000-0000-0000-000000000002',
+     'PRJ-2026-002',
      'Saly Core Network Deployment',
      'New core switching and WAN uplink for Saly site.',
      'infra', 'saly', 'risk_optimization', 'EA-BLUEPRINT-NET-2026',
@@ -55,8 +61,9 @@ INSERT INTO projects (id, name, description, division, site, cgeit_tag, strategi
      '00000000-0000-0000-0000-000000000002');
 
 -- Project 3: ERP module rollout (Business Apps)
-INSERT INTO projects (id, name, description, division, site, cgeit_tag, overall_status, owner_id) VALUES
+INSERT INTO projects (id, code, name, description, division, site, cgeit_tag, overall_status, owner_id) VALUES
     ('10000000-0000-0000-0000-000000000003',
+     'PRJ-2026-003',
      'ERP Maintenance Module Rollout',
      'Deploy ERP maintenance planning module once operational bandwidth allows.',
      'bizapps', 'sabodala', 'value_delivery', 'active',

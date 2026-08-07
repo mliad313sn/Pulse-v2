@@ -46,6 +46,11 @@ export const validation = (message = 'Bad payload', detail = undefined) =>
 export const versionConflict = (serverState) =>
   new ApiError(409, 'VERSION_CONFLICT', 'Version mismatch: entity was modified concurrently', { serverState });
 
+/** E04 lifecycle guard: PATCH may move lifecycleStage only ONE step at a time. */
+export const invalidLifecycleTransition = (from, to) =>
+  new ApiError(400, 'INVALID_LIFECYCLE_TRANSITION',
+    `Lifecycle stage may only move one step forward or backward (${from} -> ${to})`, { from, to });
+
 export const dependencyLocked = (detail = undefined) =>
   new ApiError(423, 'DEPENDENCY_LOCKED', 'Prerequisite task is not complete', detail);
 

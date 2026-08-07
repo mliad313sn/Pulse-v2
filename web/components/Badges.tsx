@@ -1,6 +1,23 @@
 import type { ReactNode } from "react";
-import { cn, PROJECT_STATUS_META, SEVERITY_META, STATUS_META, titleCaseTag } from "@/lib/utils";
-import type { ProjectClassification, ProjectStatus, RoadblockSeverity, SecurityGateStatus, TaskStatus } from "@/lib/types";
+import {
+  cn,
+  LIFECYCLE_META,
+  LIFECYCLE_STAGES,
+  OPERATING_STATUS_META,
+  PROJECT_STATUS_META,
+  SEVERITY_META,
+  STATUS_META,
+  titleCaseTag,
+} from "@/lib/utils";
+import type {
+  LifecycleStage,
+  OperatingStatus,
+  ProjectClassification,
+  ProjectStatus,
+  RoadblockSeverity,
+  SecurityGateStatus,
+  TaskStatus,
+} from "@/lib/types";
 import { EyeOffIcon, LockIcon, ShieldCheckIcon, ShieldIcon } from "./Icons";
 
 /** Base rounded pill shell shared by every badge. */
@@ -124,6 +141,57 @@ export function ClassificationBadge({ classification }: { classification?: Proje
     );
   }
   return null;
+}
+
+/** Mono chip for the server-generated project code (PRJ-YYYY-NNN). */
+export function ProjectCodeChip({ code }: { code?: string | null }) {
+  if (!code) return null;
+  return (
+    <Pill
+      title="Project code"
+      className="border border-slate-300 bg-slate-50 font-mono text-[11px] tracking-tight text-slate-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300"
+    >
+      {code}
+    </Pill>
+  );
+}
+
+/** 7-stage lifecycle chip — stepper-style dots with the current stage highlighted. */
+export function LifecycleChip({ stage }: { stage?: LifecycleStage | null }) {
+  if (!stage || !LIFECYCLE_META[stage]) return null;
+  const meta = LIFECYCLE_META[stage];
+  const idx = LIFECYCLE_STAGES.indexOf(stage);
+  return (
+    <Pill
+      title={`Lifecycle stage ${idx + 1} of ${LIFECYCLE_STAGES.length}: ${meta.label}`}
+      className="gap-2 border border-slate-200 bg-white text-slate-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300"
+    >
+      <span className="flex items-center gap-[3px]">
+        {LIFECYCLE_STAGES.map((s, i) => (
+          <span
+            key={s}
+            className={cn(
+              "rounded-full",
+              i === idx ? cn("h-2 w-2", meta.dot) : "h-1.5 w-1.5",
+              i < idx && "bg-slate-400 dark:bg-slate-500",
+              i > idx && "bg-slate-200 dark:bg-slate-700",
+            )}
+          />
+        ))}
+      </span>
+      {meta.label}
+    </Pill>
+  );
+}
+
+export function OperatingStatusBadge({ status }: { status?: OperatingStatus | null }) {
+  if (!status || !OPERATING_STATUS_META[status]) return null;
+  const meta = OPERATING_STATUS_META[status];
+  return (
+    <Pill title="Operating status" className={meta.badge}>
+      {meta.label}
+    </Pill>
+  );
 }
 
 export function TagChip({ tag, tone = "indigo" }: { tag: string; tone?: "indigo" | "violet" | "rose" | "cyan" }) {

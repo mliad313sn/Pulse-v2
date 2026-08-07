@@ -8,12 +8,16 @@ import { useApp } from "@/lib/store";
 import Kanban from "@/components/Kanban";
 import AuditPeek from "@/components/AuditPeek";
 import EmptyState from "@/components/EmptyState";
+import ProjectMembers from "@/components/ProjectMembers";
 import { PageHeader } from "@/components/Headings";
 import LogRoadblockButton from "@/components/LogRoadblockButton";
 import {
   ClassificationBadge,
   CountPill,
+  LifecycleChip,
+  OperatingStatusBadge,
   Pill,
+  ProjectCodeChip,
   ProjectStatusBadge,
   SecurityGateBadge,
   SeverityBadge,
@@ -68,6 +72,8 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
   const div = divisionMeta(project.division);
   const openRbs = projectRoadblocks.filter((r) => r.status !== "resolved");
+  const pm = project.pmId ? users.find((u) => u.id === project.pmId) : null;
+  const sponsor = project.sponsorId ? users.find((u) => u.id === project.sponsorId) : null;
 
   return (
     <div className="space-y-8">
@@ -96,6 +102,9 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           }
         />
         <div className="mt-3 flex flex-wrap items-center gap-1.5">
+          <ProjectCodeChip code={project.code} />
+          <LifecycleChip stage={project.lifecycleStage} />
+          <OperatingStatusBadge status={project.operatingStatus} />
           <ProjectStatusBadge status={project.overallStatus} />
           <ClassificationBadge classification={project.classification} />
           <SecurityGateBadge status={project.securityGateStatus} />
@@ -105,9 +114,26 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             <TagChip key={t} tag={t} tone="rose" />
           ))}
         </div>
+        {(pm || sponsor) && (
+          <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+            {pm && (
+              <span>
+                PM: <span className="font-medium text-slate-700 dark:text-slate-200">{pm.name}</span>
+              </span>
+            )}
+            {pm && sponsor && <span className="mx-2 text-slate-300 dark:text-slate-600">·</span>}
+            {sponsor && (
+              <span>
+                Sponsor: <span className="font-medium text-slate-700 dark:text-slate-200">{sponsor.name}</span>
+              </span>
+            )}
+          </p>
+        )}
       </header>
 
       <Kanban projectId={project.id} />
+
+      <ProjectMembers project={project} />
 
       <section>
         <div className="mb-3 flex items-center justify-between">

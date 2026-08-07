@@ -31,8 +31,9 @@ INSERT INTO divisions (code, name, description) VALUES
     ('management', 'Group IT Management',     'Executive oversight');
 
 CREATE TABLE sites (
-    code TEXT PRIMARY KEY,
-    name TEXT NOT NULL
+    code        TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    description TEXT
 );
 
 INSERT INTO sites (code, name) VALUES
@@ -68,6 +69,9 @@ CREATE TABLE users (
     privileges           TEXT[] NOT NULL DEFAULT '{}',
     is_active            BOOLEAN NOT NULL DEFAULT true,
     must_change_password BOOLEAN NOT NULL DEFAULT false,
+    -- E01/plan §8.2: when FALSE every read is additionally scoped to projects
+    -- on the user's site or projects where the user is member/owner/sponsor.
+    enterprise_access    BOOLEAN NOT NULL DEFAULT true,
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -103,14 +107,76 @@ CREATE TABLE user_sessions (
 CREATE INDEX idx_user_sessions_user ON user_sessions(user_id);
 
 -- ----------------------------------------------------------------------------
+-- E04 — Portfolio foundations: strategic pillars > portfolios > programs.
+-- Admin/lead-managed reference structures (no OCC version — not collaborative
+-- core objects; every mutation is still audited).
+-- ----------------------------------------------------------------------------
+CREATE TABLE strategic_pillars (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        TEXT NOT NULL,
+    description TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE portfolios (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title       TEXT NOT NULL,
+    description TEXT,
+    pillar_id   UUID REFERENCES strategic_pillars(id),
+    owner_id    UUID REFERENCES users(id),
+    date_from   DATE,
+    date_to     DATE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE programs (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title        TEXT NOT NULL,
+    objective    TEXT,
+    portfolio_id UUID NOT NULL REFERENCES portfolios(id),
+    owner_id     UUID REFERENCES users(id),
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_programs_portfolio ON programs(portfolio_id);
+
+-- ----------------------------------------------------------------------------
+-- E04 — Concurrency-safe project code allocation (PRJ-YYYY-NNN).
+-- The create transaction takes the per-year row lock (SELECT ... FOR UPDATE)
+-- and increments last_value — NEVER max()+1 over projects.
+-- ----------------------------------------------------------------------------
+CREATE TABLE project_code_sequences (
+    year       INTEGER PRIMARY KEY,
+    last_value INTEGER NOT NULL DEFAULT 0
+);
+
+-- ----------------------------------------------------------------------------
 -- Projects — OCC via (version, updated_at)
 -- ----------------------------------------------------------------------------
 CREATE TABLE projects (
     id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- Server-generated PRJ-YYYY-NNN, immutable after creation (trigger backstop).
+    code                 TEXT UNIQUE NOT NULL,
     name                 TEXT NOT NULL,
     description          TEXT,
     division             TEXT NOT NULL REFERENCES divisions(code),
     site                 TEXT REFERENCES sites(code),
+    portfolio_id         UUID REFERENCES portfolios(id),
+    program_id           UUID REFERENCES programs(id),
+    sponsor_id           UUID REFERENCES users(id),
+    -- E04 slice: data + validation only (single-step transitions); the G0-G5
+    -- gate engine arrives with E05.
+    lifecycle_stage      TEXT NOT NULL DEFAULT 'IDEA'
+                         CHECK (lifecycle_stage IN ('IDEA', 'INITIATION', 'PLANNING', 'EXECUTION',
+                                                    'DEPLOYMENT', 'RUN', 'CLOSED')),
+    operating_status     TEXT NOT NULL DEFAULT 'NOT_STARTED'
+                         CHECK (operating_status IN ('NOT_STARTED', 'IN_PROGRESS', 'ON_HOLD',
+                                                     'COMPLETED', 'CANCELLED')),
+    engaged_divisions    TEXT[] NOT NULL DEFAULT '{}',
+    sites                TEXT[] NOT NULL DEFAULT '{}',  -- additional sites; `site` stays primary
     cgeit_tag            TEXT NOT NULL DEFAULT 'value_delivery'
                          CHECK (cgeit_tag IN ('strategic_alignment', 'value_delivery', 'risk_optimization',
                                               'resource_optimization', 'performance_measurement')),
@@ -130,6 +196,61 @@ CREATE TABLE projects (
 
 CREATE INDEX idx_projects_division ON projects(division);
 CREATE INDEX idx_projects_site ON projects(site);
+CREATE INDEX idx_projects_portfolio ON projects(portfolio_id);
+CREATE INDEX idx_projects_program ON projects(program_id);
+
+-- Backstop for the service rule: project codes are immutable after creation.
+CREATE OR REPLACE FUNCTION forbid_project_code_change() RETURNS trigger AS $$
+BEGIN
+    IF NEW.code IS DISTINCT FROM OLD.code THEN
+        RAISE EXCEPTION 'PROJECT_CODE_IMMUTABLE: project code cannot be changed'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_project_code_immutable
+    BEFORE UPDATE OF code ON projects
+    FOR EACH ROW EXECUTE FUNCTION forbid_project_code_change();
+
+-- ----------------------------------------------------------------------------
+-- E04 — Project membership (project roles per plan §8).
+--   * At most ONE member with role PM per project (partial unique index).
+--   * VIEWER base-role users can never hold PM/WORKSTREAM_LEAD (plan inv. 2).
+--   * A PM member gains project-scoped write authority (service policy).
+-- ----------------------------------------------------------------------------
+CREATE TABLE project_members (
+    id         UUID NOT NULL UNIQUE DEFAULT gen_random_uuid(),  -- surrogate for the audit ledger
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role       TEXT NOT NULL
+               CHECK (role IN ('PM', 'SPONSOR', 'WORKSTREAM_LEAD', 'CONTRIBUTOR', 'SME',
+                               'FINANCE_CONTROLLER', 'SECURITY_REVIEWER', 'SITE_LEAD',
+                               'AUDITOR', 'APPROVER', 'INFORMED')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, user_id, role)
+);
+
+CREATE INDEX idx_project_members_user ON project_members(user_id);
+CREATE UNIQUE INDEX uniq_project_members_pm ON project_members(project_id) WHERE role = 'PM';
+
+-- Backstop for plan invariant 2: VIEWER accounts never lead work.
+CREATE OR REPLACE FUNCTION forbid_viewer_lead_roles() RETURNS trigger AS $$
+BEGIN
+    IF NEW.role IN ('PM', 'WORKSTREAM_LEAD') AND EXISTS (
+        SELECT 1 FROM users WHERE id = NEW.user_id AND base_role = 'VIEWER'
+    ) THEN
+        RAISE EXCEPTION 'VIEWER_CANNOT_LEAD: VIEWER users cannot hold PM or WORKSTREAM_LEAD'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_member_viewer_guard
+    BEFORE INSERT OR UPDATE ON project_members
+    FOR EACH ROW EXECUTE FUNCTION forbid_viewer_lead_roles();
 
 -- ----------------------------------------------------------------------------
 -- Tasks — dependency_lock points at the prerequisite task (Infra <-> Ops handshake)
@@ -264,6 +385,14 @@ CREATE TRIGGER trg_audit_tasks     AFTER INSERT OR UPDATE OR DELETE ON tasks
 CREATE TRIGGER trg_audit_roadblocks AFTER INSERT OR UPDATE OR DELETE ON roadblocks
     FOR EACH ROW EXECUTE FUNCTION write_audit_log();
 CREATE TRIGGER trg_audit_security  AFTER INSERT OR UPDATE OR DELETE ON security_approvals
+    FOR EACH ROW EXECUTE FUNCTION write_audit_log();
+CREATE TRIGGER trg_audit_pillars   AFTER INSERT OR UPDATE OR DELETE ON strategic_pillars
+    FOR EACH ROW EXECUTE FUNCTION write_audit_log();
+CREATE TRIGGER trg_audit_portfolios AFTER INSERT OR UPDATE OR DELETE ON portfolios
+    FOR EACH ROW EXECUTE FUNCTION write_audit_log();
+CREATE TRIGGER trg_audit_programs  AFTER INSERT OR UPDATE OR DELETE ON programs
+    FOR EACH ROW EXECUTE FUNCTION write_audit_log();
+CREATE TRIGGER trg_audit_members   AFTER INSERT OR UPDATE OR DELETE ON project_members
     FOR EACH ROW EXECUTE FUNCTION write_audit_log();
 
 -- ----------------------------------------------------------------------------

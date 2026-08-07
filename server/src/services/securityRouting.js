@@ -96,11 +96,12 @@ export async function applyApprovalDecision(repo, reviewer, approvalId, { decisi
   const approval = await repo.get('approval', approvalId);
   if (!approval) throw notFound(`SecurityApproval ${approvalId} not found`);
   // Concealment (ADR-005): approvals under projects the reviewer may not read
-  // are indistinguishable from missing ones (interim scope — until E04
-  // membership, confidential projects are reviewable only by ADMIN/owner
-  // holders of the privilege).
+  // are indistinguishable from missing ones. Membership (E04) extends read
+  // access — add the reviewer as a SECURITY_REVIEWER member of a confidential
+  // project to let them decide its approvals.
   const project = await repo.get('project', approval.projectId);
-  if (project && !canReadProject(reviewer, project)) {
+  const members = project ? await repo.listProjectMembers(project.id) : [];
+  if (project && !canReadProject(reviewer, project, members)) {
     throw notFound(`SecurityApproval ${approvalId} not found`);
   }
   if (approval.status !== 'pending') {

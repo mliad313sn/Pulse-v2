@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { asyncHandler } from './middleware.js';
 import { applyApprovalDecision } from '../services/securityRouting.js';
+import { loadProjectAccess } from './helpers.js';
 import { readableProjectIds } from '../services/policy.js';
 
 export function approvalsRouter() {
@@ -10,12 +11,13 @@ export function approvalsRouter() {
   router.get('/', asyncHandler(async (req, res) => {
     const repo = req.app.locals.repo;
     const filter = req.query.status ? { status: req.query.status } : {};
-    const [approvals, projects] = await Promise.all([
+    const [approvals, { projects, membersByProject }] = await Promise.all([
       repo.list('approval', filter),
-      repo.list('project'),
+      loadProjectAccess(repo),
     ]);
-    // ADR-005: approvals of concealed projects are absent from the queue.
-    const visible = readableProjectIds(req.user, projects);
+    // ADR-005 + E01 enterprise access: approvals of concealed projects are
+    // absent from the queue.
+    const visible = readableProjectIds(req.user, projects, membersByProject);
     res.json(approvals.filter((a) => visible.has(a.projectId)));
   }));
 

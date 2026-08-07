@@ -8,6 +8,7 @@ import { useMemo } from "react";
 import { useApp } from "@/lib/store";
 import TaskCard from "@/components/TaskCard";
 import EmptyState from "@/components/EmptyState";
+import NewProjectButton from "@/components/NewProjectButton";
 import { PageHeader, SectionHeader } from "@/components/Headings";
 import { LockIcon } from "@/components/Icons";
 import { StatusBadge } from "@/components/Badges";
@@ -43,8 +44,10 @@ export default function InfraDashboard() {
   return (
     <div className="mx-auto max-w-3xl">
       <PageHeader
+        className="mb-6 items-end"
         title="Dependency timeline"
         subtitle={`${locked.length} locked behind prerequisites · ${ready.length} ready to progress`}
+        action={<NewProjectButton />}
       />
 
       <section className="mb-10">

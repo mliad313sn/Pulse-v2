@@ -1,4 +1,16 @@
-import type { Division, ProjectStatus, RoadblockSeverity, Task, TaskStatus, User } from "./types";
+import type {
+  Division,
+  LifecycleStage,
+  OperatingStatus,
+  Project,
+  ProjectMember,
+  ProjectRole,
+  ProjectStatus,
+  RoadblockSeverity,
+  Task,
+  TaskStatus,
+  User,
+} from "./types";
 
 /** Tiny classnames helper. */
 export function cn(...parts: Array<string | false | null | undefined>): string {
@@ -18,6 +30,23 @@ export function canDecideApprovals(user: Pick<User, "privileges"> | null | undef
 /** VIEWER is hard read-only (server enforces; this only hides/disables affordances). */
 export function canWriteUser(user: Pick<User, "baseRole"> | null | undefined): boolean {
   return Boolean(user) && user!.baseRole !== "VIEWER";
+}
+
+/** Project create is ADMIN or DIVISION_LEAD (server enforces; hides the button otherwise). */
+export function canCreateProject(user: Pick<User, "baseRole"> | null | undefined): boolean {
+  return user?.baseRole === "ADMIN" || user?.baseRole === "DIVISION_LEAD";
+}
+
+/** Member-management affordances: ADMIN, DIVISION_LEAD, or the project's PM (server enforces). */
+export function canManageProject(
+  user: Pick<User, "id" | "baseRole"> | null | undefined,
+  project: Pick<Project, "pmId"> | null | undefined,
+  members: ProjectMember[] = [],
+): boolean {
+  if (!user) return false;
+  if (user.baseRole === "ADMIN" || user.baseRole === "DIVISION_LEAD") return true;
+  if (project?.pmId && project.pmId === user.id) return true;
+  return members.some((m) => m.role === "PM" && m.userId === user.id);
 }
 
 const BASE_ROLE_LABELS: Record<string, string> = {
@@ -111,6 +140,87 @@ export const PROJECT_STATUS_META: Record<ProjectStatus, { label: string; badge: 
   on_hold: { label: "On hold", badge: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300" },
   complete: { label: "Complete", badge: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300" },
 };
+
+/** Ordered 7-stage lifecycle (drives the stepper-style chip on project pages). */
+export const LIFECYCLE_STAGES: LifecycleStage[] = [
+  "IDEA",
+  "INITIATION",
+  "PLANNING",
+  "EXECUTION",
+  "DEPLOYMENT",
+  "RUN",
+  "CLOSED",
+];
+
+export const LIFECYCLE_META: Record<LifecycleStage, { label: string; dot: string }> = {
+  IDEA: { label: "Idea", dot: "bg-slate-400" },
+  INITIATION: { label: "Initiation", dot: "bg-cyan-500" },
+  PLANNING: { label: "Planning", dot: "bg-indigo-500" },
+  EXECUTION: { label: "Execution", dot: "bg-blue-500" },
+  DEPLOYMENT: { label: "Deployment", dot: "bg-violet-500" },
+  RUN: { label: "Run", dot: "bg-emerald-500" },
+  CLOSED: { label: "Closed", dot: "bg-slate-500" },
+};
+
+export const OPERATING_STATUS_META: Record<OperatingStatus, { label: string; badge: string }> = {
+  NOT_STARTED: {
+    label: "Not started",
+    badge: "bg-slate-100 text-slate-600 dark:bg-slate-700/60 dark:text-slate-300",
+  },
+  IN_PROGRESS: {
+    label: "In progress",
+    badge: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
+  },
+  ON_HOLD: {
+    label: "On hold",
+    badge: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300",
+  },
+  COMPLETED: {
+    label: "Completed",
+    badge: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300",
+  },
+  CANCELLED: {
+    label: "Cancelled",
+    badge: "bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300",
+  },
+};
+
+/** Project member roles in display order (PM/SPONSOR first). */
+export const PROJECT_ROLES: ProjectRole[] = [
+  "PM",
+  "SPONSOR",
+  "WORKSTREAM_LEAD",
+  "CONTRIBUTOR",
+  "SME",
+  "FINANCE_CONTROLLER",
+  "SECURITY_REVIEWER",
+  "SITE_LEAD",
+  "AUDITOR",
+  "APPROVER",
+  "INFORMED",
+];
+
+const PROJECT_ROLE_LABELS: Record<ProjectRole, string> = {
+  PM: "Project Manager",
+  SPONSOR: "Sponsor",
+  WORKSTREAM_LEAD: "Workstream Lead",
+  CONTRIBUTOR: "Contributor",
+  SME: "SME",
+  FINANCE_CONTROLLER: "Finance Controller",
+  SECURITY_REVIEWER: "Security Reviewer",
+  SITE_LEAD: "Site Lead",
+  AUDITOR: "Auditor",
+  APPROVER: "Approver",
+  INFORMED: "Informed",
+};
+
+export function projectRoleLabel(role: string | null | undefined): string {
+  return PROJECT_ROLE_LABELS[role as ProjectRole] ?? titleCaseTag(String(role ?? ""));
+}
+
+/** Shared text-input styling for dialogs/forms (matches ChangePasswordScreen). */
+export const INPUT_CLASS =
+  "h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 dark:border-slate-600 dark:bg-slate-900 dark:focus:ring-indigo-900";
 
 export const SEVERITIES: RoadblockSeverity[] = ["low", "medium", "high", "critical"];
 

@@ -51,6 +51,10 @@ const IDB_STORES: idb.StoreName[] = [
   "outbox",
   "conflicts",
   "meta",
+  "pillars",
+  "portfolios",
+  "programs",
+  "members",
 ];
 
 type EntityListKey = "projects" | "tasks" | "roadblocks";
@@ -119,6 +123,8 @@ interface AppActions {
     notes?: string,
   ) => Promise<MutateOutcome>;
   resolveConflict: (opId: string, resolution: "server" | Record<string, unknown>) => Promise<void>;
+  /** Insert/refresh a project in the local cache (e.g. right after online create). */
+  upsertProject: (project: Project) => void;
   lockedReason: (task: Task) => LockedReason | null;
   lockedMessage: (task: Task) => string;
   openRoadblock: (target: RoadblockTarget) => void;
@@ -734,6 +740,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [patch, setEntity, flush, refreshOutboxCount, toast],
   );
 
+  const upsertProject = useCallback(
+    (project: Project) => setEntity("projects", project),
+    [setEntity],
+  );
+
   // ---- boot & connectivity --------------------------------------------------
 
   /**
@@ -876,6 +887,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       createRoadblock,
       decideApproval,
       resolveConflict,
+      upsertProject,
       lockedReason,
       lockedMessage,
       openRoadblock,
@@ -894,6 +906,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       createRoadblock,
       decideApproval,
       resolveConflict,
+      upsertProject,
       lockedReason,
       lockedMessage,
       openRoadblock,

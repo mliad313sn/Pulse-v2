@@ -4,6 +4,7 @@
 
 import { useApp } from "@/lib/store";
 import ApprovalsQueue from "@/components/ApprovalsQueue";
+import NewProjectButton from "@/components/NewProjectButton";
 import ProjectCard from "@/components/ProjectCard";
 import { PageHeader, SectionHeader } from "@/components/Headings";
 
@@ -14,8 +15,10 @@ export default function InfosecDashboard() {
   return (
     <div className="mx-auto max-w-3xl">
       <PageHeader
+        className="mb-6 items-end"
         title="Security review"
         subtitle="Network-altering work routes here for approval before it can progress."
+        action={<NewProjectButton />}
       />
 
       <ApprovalsQueue canDecide={canDecide} />

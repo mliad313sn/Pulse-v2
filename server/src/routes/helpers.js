@@ -2,6 +2,44 @@ import { asyncHandler } from './middleware.js';
 import { computeLocked } from '../services/gates.js';
 import { createEntity, patchEntity } from '../services/entityOps.js';
 
+/** Groups membership rows by projectId (Map projectId -> rows). */
+export function groupMembers(members) {
+  const byProject = new Map();
+  for (const m of members) {
+    const list = byProject.get(m.projectId);
+    if (list) list.push(m);
+    else byProject.set(m.projectId, [m]);
+  }
+  return byProject;
+}
+
+/**
+ * Loads everything the read-side policy needs in one place: the project list
+ * plus membership rows grouped by project (classification is membership-based
+ * and enterprise access needs member/owner/sponsor checks — E04/E01).
+ */
+export async function loadProjectAccess(repo) {
+  const [projects, members] = await Promise.all([
+    repo.list('project'),
+    repo.listProjectMembers(),
+  ]);
+  return { projects, membersByProject: groupMembers(members) };
+}
+
+/** Wire decoration: derived `pmId` (the single PM member, or null). */
+export function withPm(project, members = []) {
+  return { ...project, pmId: members.find((m) => m.role === 'PM')?.userId ?? null };
+}
+
+export function withPmAll(projects, membersByProject) {
+  return projects.map((p) => withPm(p, membersByProject.get(p.id) ?? []));
+}
+
+/** Single-project variant fetching its own members. */
+export async function withPmOne(repo, project) {
+  return withPm(project, await repo.listProjectMembers(project.id));
+}
+
 /**
  * Decorate tasks with the derived `locked` flag.
  * `preloaded` lets callers that already fetched the full task/project lists
