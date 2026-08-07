@@ -183,7 +183,7 @@ describe('E03 — permission matrix', () => {
       ['POST', '/api/tasks', { projectId: SEED.project1, title: 'v' }],
       ['PATCH', `/api/tasks/${SEED.erpTask}`, { version: 1, description: 'v' }],
       ['POST', '/api/roadblocks', { projectId: SEED.project1, description: 'v' }],
-      ['PATCH', `/api/roadblocks/${SEED.roadblock1}`, { version: 1, status: 'mitigating' }],
+      ['PATCH', `/api/roadblocks/${SEED.roadblock1}`, { version: 1, status: 'IN_PROGRESS' }],
       ['POST', `/api/approvals/${SEED.approval1}/decision`, { decision: 'approved' }],
       ['POST', '/api/sync', { clientId: 'viewer-device', operations: [] }],
       ['POST', '/api/users', { name: 'v', email: 'v@opspm360.local', division: 'ops', baseRole: 'VIEWER' }],

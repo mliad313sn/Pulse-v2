@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: OpsPM360 API
-  version: "1.5.0"
+  version: "1.6.0"
   description: |
     Offline-first project portfolio management for multi-site mining IT operations.
     Auth: server-side sessions — POST /auth/login sets the HttpOnly `ppm_session`
@@ -30,6 +30,17 @@ info:
     override (manage-level, reason >=30 chars, audited, MANUAL badge),
     change-based rag_snapshots trend history, and APPEND-ONLY project updates
     (POST + GET only; the freshness source; online-only — not a sync entity).
+    E09/E11 (ADR-007): actions (lightweight accountability items; nullable
+    projectId — general actions are owner/creator/ADMIN-visible; CANCELLED
+    never counts as completed; actions RIDE offline sync and drive the RAG
+    overdueWork signal), the roadblock LIFECYCLE
+    RAISED->ASSIGNED->IN_PROGRESS->RESOLVED->VERIFIED (forward-only with
+    skips; explicit reopen with reason; RESOLVED needs a resolutionNote;
+    VERIFIED needs manage-level or the reporter; one-click escalation ->
+    at-least-AMBER RAG), risks (derived inherent/residual scores, 1-5
+    scales) and CAPA (forward-only no-skip lifecycle with closure
+    requirements; convert-from-roadblock). Risks and CAPAs are ONLINE-ONLY
+    (not offline sync entities).
     E25/E26 (ADR-003 executed): the offline sync batch is an ORDERED command
     log (client-assigned integer seq, ascending processing, batch-level 400 on
     missing/duplicate seq). Strict OCC is the ONLY conflict behavior — the
@@ -55,6 +66,9 @@ tags:
   - name: updates
   - name: health
   - name: roadblocks
+  - name: actions
+  - name: risks
+  - name: capas
   - name: approvals
   - name: sync
   - name: audit
@@ -670,6 +684,16 @@ paths:
                   roadblocks:
                     type: array
                     items: { $ref: "#/components/schemas/Roadblock" }
+                  actions:
+                    type: array
+                    items: { $ref: "#/components/schemas/Action" }
+                    description: Project-linked actions of visible projects + the caller's own general actions
+                  risks:
+                    type: array
+                    items: { $ref: "#/components/schemas/Risk" }
+                  capas:
+                    type: array
+                    items: { $ref: "#/components/schemas/Capa" }
                   approvals:
                     type: array
                     items: { $ref: "#/components/schemas/SecurityApproval" }
@@ -1407,6 +1431,262 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Roadblock" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/VersionConflict" }
+
+  /roadblocks/{id}/escalate:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    post:
+      tags: [roadblocks]
+      summary: One-click escalation (E11, plan §27)
+      description: |
+        Any roadblock writer. Sets escalated/escalatedAt (server-managed),
+        bumps the version, audits ESCALATED (notification fan-out arrives with
+        E19). Idempotent — an already-escalated roadblock returns 200
+        unchanged. A RESOLVED/VERIFIED roadblock cannot be escalated (400):
+        reopen it first. Escalated OPEN roadblocks of ANY severity make the
+        RAG roadblocks signal at least AMBER.
+      responses:
+        "200":
+          description: Escalated (or already-escalated) roadblock
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Roadblock" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /roadblocks/{id}/capa:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    post:
+      tags: [roadblocks, capas]
+      summary: Convert a roadblock into a CAPA (§29)
+      description: |
+        Manage-level authority or the roadblock's owner. Creates a CAPA with
+        sourceType ROADBLOCK, sourceId and projectId prefilled from the
+        roadblock (never client-overridable); issue defaults to the roadblock
+        description and ownerId to the caller.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CapaCreate" }
+      responses:
+        "201":
+          description: Created CAPA
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Capa" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /actions:
+    get:
+      tags: [actions]
+      summary: List actions (project concealment + general owner/creator/ADMIN scoping)
+      parameters:
+        - name: projectId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: mine
+          in: query
+          required: false
+          schema: { type: string, enum: ["1", "true"] }
+          description: Narrow to actions owned by the caller ("My Work")
+      responses:
+        "200":
+          description: Visible actions
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Action" }
+    post:
+      tags: [actions]
+      summary: Create an action (general = self-owned or ADMIN; project-linked = task-like involvement)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActionCreate" }
+      responses:
+        "201":
+          description: Created action
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Action" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /actions/{id}:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    patch:
+      tags: [actions]
+      summary: Update an action (owner/creator/manage; OCC)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActionPatch" }
+      responses:
+        "200":
+          description: Updated action
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Action" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/VersionConflict" }
+
+  /projects/{id}/actions:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    get:
+      tags: [actions]
+      summary: Actions of a project (concealed projects 404)
+      responses:
+        "200":
+          description: Actions
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Action" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/risks:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    get:
+      tags: [risks]
+      summary: Risk register of a project (concealed projects 404)
+      responses:
+        "200":
+          description: Risks
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Risk" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /risks:
+    get:
+      tags: [risks]
+      summary: List risks (classification + enterprise-access filtered)
+      parameters:
+        - name: projectId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Risks
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Risk" }
+    post:
+      tags: [risks]
+      summary: Create a risk (task-like involvement policy; scores derived server-side)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RiskCreate" }
+      responses:
+        "201":
+          description: Created risk
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Risk" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /risks/{id}:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    patch:
+      tags: [risks]
+      summary: Update a risk (involvement OR the risk owner; OCC; scores recomputed)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RiskPatch" }
+      responses:
+        "200":
+          description: Updated risk
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Risk" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/VersionConflict" }
+
+  /capas:
+    get:
+      tags: [capas]
+      summary: List CAPAs (project concealment + general owner/verifier/ADMIN scoping)
+      parameters:
+        - name: projectId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Visible CAPAs
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Capa" }
+    post:
+      tags: [capas]
+      summary: Create a CAPA (manage-level or self-owned; general other-owned needs ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CapaCreate" }
+      responses:
+        "201":
+          description: Created CAPA
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Capa" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /capas/{id}:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    patch:
+      tags: [capas]
+      summary: Update a CAPA (owner/verifier/manage; OCC; one-stage-forward transitions)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CapaPatch" }
+      responses:
+        "200":
+          description: Updated CAPA
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Capa" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/VersionConflict" }
 
@@ -1916,14 +2196,31 @@ components:
 
     Roadblock:
       type: object
+      description: |
+        E11 lifecycle (ADR-007): status moves forward-only along
+        RAISED -> ASSIGNED -> IN_PROGRESS -> RESOLVED -> VERIFIED (skips
+        allowed). The only backward move is the explicit REOPEN (status RAISED
+        + reopenReason >= 10 chars, from RESOLVED/VERIFIED). Setting ownerId
+        while RAISED implicitly moves to ASSIGNED. RESOLVED requires a
+        resolutionNote; VERIFIED requires manage-level authority or the
+        reporter. escalated/escalatedAt are server-managed (escalate endpoint
+        only — PATCH attempts are silently ignored).
       properties:
         id: { type: string, format: uuid }
         projectId: { type: string, format: uuid }
         taskId: { type: string, format: uuid, nullable: true }
         description: { type: string }
         severity: { type: string, enum: [low, medium, high, critical] }
-        status: { type: string, enum: [open, mitigating, resolved] }
+        status: { type: string, enum: [RAISED, ASSIGNED, IN_PROGRESS, RESOLVED, VERIFIED] }
         reportedBy: { type: string, format: uuid, nullable: true }
+        ownerId: { type: string, format: uuid, nullable: true }
+        dueDate: { type: string, format: date, nullable: true }
+        impact: { type: string, nullable: true }
+        resolutionApproach: { type: string, nullable: true }
+        resolutionNote: { type: string, nullable: true }
+        escalated: { type: boolean }
+        escalatedAt: { type: string, format: date-time, nullable: true }
+        reopenReason: { type: string, nullable: true }
         version: { type: integer }
         updatedAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time }
@@ -1936,7 +2233,11 @@ components:
         taskId: { type: string, format: uuid }
         description: { type: string }
         severity: { type: string, enum: [low, medium, high, critical], default: medium }
-        status: { type: string, enum: [open, mitigating, resolved], default: open }
+        status: { type: string, enum: [RAISED, ASSIGNED, IN_PROGRESS, RESOLVED, VERIFIED], default: RAISED }
+        ownerId: { type: string, format: uuid, description: Setting it while RAISED implicitly moves the status to ASSIGNED }
+        dueDate: { type: string, format: date }
+        impact: { type: string }
+        resolutionApproach: { type: string }
 
     RoadblockPatch:
       type: object
@@ -1946,7 +2247,164 @@ components:
         taskId: { type: string, format: uuid, nullable: true }
         description: { type: string }
         severity: { type: string }
-        status: { type: string }
+        status: { type: string, description: Forward-only along the lifecycle; RAISED from RESOLVED/VERIFIED = reopen (needs reopenReason) }
+        ownerId: { type: string, format: uuid, nullable: true }
+        dueDate: { type: string, format: date, nullable: true }
+        impact: { type: string, nullable: true }
+        resolutionApproach: { type: string, nullable: true }
+        resolutionNote: { type: string, nullable: true, description: Required when moving to RESOLVED }
+        reopenReason: { type: string, nullable: true, description: Required (>=10 chars) when reopening to RAISED }
+
+    Action:
+      type: object
+      description: |
+        E09 accountability item (plan §19). projectId null = a GENERAL action,
+        visible only to its owner, its creator, and ADMIN. CANCELLED never
+        counts as completed anywhere. Actions ride the offline sync protocol
+        and drive the RAG overdueWork signal (OPEN + dueDate < today).
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid, nullable: true }
+        title: { type: string }
+        ownerId: { type: string, format: uuid }
+        dueDate: { type: string, format: date, nullable: true }
+        priority: { type: string, enum: [low, normal, high] }
+        status: { type: string, enum: [OPEN, DONE, CANCELLED] }
+        sourceType: { type: string, enum: [MANUAL, ROADBLOCK, CAPA] }
+        roadblockId: { type: string, format: uuid, nullable: true }
+        capaId: { type: string, format: uuid, nullable: true }
+        createdBy: { type: string, format: uuid, description: Server-stamped to the session user — never client-writable }
+        version: { type: integer }
+        updatedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    ActionCreate:
+      type: object
+      required: [title, ownerId]
+      properties:
+        projectId: { type: string, format: uuid, nullable: true, description: Omit/null for a general (non-project) action }
+        title: { type: string }
+        ownerId: { type: string, format: uuid }
+        dueDate: { type: string, format: date }
+        priority: { type: string, enum: [low, normal, high], default: normal }
+        status: { type: string, enum: [OPEN, DONE, CANCELLED], default: OPEN }
+        sourceType: { type: string, enum: [MANUAL, ROADBLOCK, CAPA], default: MANUAL }
+        roadblockId: { type: string, format: uuid }
+        capaId: { type: string, format: uuid }
+
+    ActionPatch:
+      allOf:
+        - $ref: "#/components/schemas/ActionCreate"
+      type: object
+      required: [version]
+      properties:
+        version: { type: integer, description: Base version for OCC }
+
+    Risk:
+      type: object
+      description: |
+        E11 risk register entry (plan §28). inherentScore = probability*impact
+        and residualScore = residualProbability*residualImpact (null unless
+        BOTH residuals are set) are DERIVED server-side — never writable.
+        ONLINE-ONLY (not an offline sync entity).
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        description: { type: string }
+        category: { type: string, enum: [technical, schedule, resource, security, financial, external, other] }
+        probability: { type: integer, minimum: 1, maximum: 5 }
+        impact: { type: integer, minimum: 1, maximum: 5 }
+        inherentScore: { type: integer, description: Derived probability*impact (read-only) }
+        treatment: { type: string, nullable: true }
+        ownerId: { type: string, format: uuid, nullable: true }
+        targetDate: { type: string, format: date, nullable: true }
+        residualProbability: { type: integer, minimum: 1, maximum: 5, nullable: true }
+        residualImpact: { type: integer, minimum: 1, maximum: 5, nullable: true }
+        residualScore: { type: integer, nullable: true, description: Derived; null unless BOTH residual fields set (read-only) }
+        status: { type: string, enum: [OPEN, MITIGATING, CLOSED] }
+        version: { type: integer }
+        updatedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    RiskCreate:
+      type: object
+      required: [projectId, description, probability, impact]
+      properties:
+        projectId: { type: string, format: uuid }
+        description: { type: string }
+        category: { type: string, enum: [technical, schedule, resource, security, financial, external, other], default: other }
+        probability: { type: integer, minimum: 1, maximum: 5 }
+        impact: { type: integer, minimum: 1, maximum: 5 }
+        treatment: { type: string }
+        ownerId: { type: string, format: uuid }
+        targetDate: { type: string, format: date }
+        residualProbability: { type: integer, minimum: 1, maximum: 5 }
+        residualImpact: { type: integer, minimum: 1, maximum: 5 }
+        status: { type: string, enum: [OPEN, MITIGATING, CLOSED], default: OPEN }
+
+    RiskPatch:
+      allOf:
+        - $ref: "#/components/schemas/RiskCreate"
+      type: object
+      required: [version]
+      properties:
+        version: { type: integer, description: Base version for OCC }
+
+    Capa:
+      type: object
+      description: |
+        §29 Corrective and Preventive Action. Lifecycle OPEN -> ANALYSIS ->
+        ACTION_PLANNED -> IMPLEMENTATION -> VERIFICATION -> CLOSED is
+        forward-only with NO skips. VERIFICATION requires correctiveAction +
+        preventiveAction; CLOSED requires verifierId + effectivenessResult
+        (verifiedAt is stamped server-side). projectId null = org-level CAPA,
+        visible to owner/verifier/ADMIN only. ONLINE-ONLY (not an offline sync
+        entity).
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid, nullable: true }
+        sourceType: { type: string, enum: [ROADBLOCK, RISK, AUDIT, INCIDENT, REVIEW, MANUAL] }
+        sourceId: { type: string, format: uuid, nullable: true }
+        issue: { type: string }
+        rootCause: { type: string, nullable: true }
+        immediateCorrection: { type: string, nullable: true }
+        correctiveAction: { type: string, nullable: true }
+        preventiveAction: { type: string, nullable: true }
+        ownerId: { type: string, format: uuid }
+        verifierId: { type: string, format: uuid, nullable: true }
+        dueDate: { type: string, format: date, nullable: true }
+        status: { type: string, enum: [OPEN, ANALYSIS, ACTION_PLANNED, IMPLEMENTATION, VERIFICATION, CLOSED] }
+        effectivenessResult: { type: string, nullable: true }
+        verifiedAt: { type: string, format: date-time, nullable: true, description: Server-stamped on the transition to CLOSED }
+        version: { type: integer }
+        updatedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    CapaCreate:
+      type: object
+      required: [issue, ownerId]
+      properties:
+        projectId: { type: string, format: uuid, nullable: true }
+        sourceType: { type: string, enum: [ROADBLOCK, RISK, AUDIT, INCIDENT, REVIEW, MANUAL], default: MANUAL }
+        sourceId: { type: string, format: uuid }
+        issue: { type: string }
+        rootCause: { type: string }
+        immediateCorrection: { type: string }
+        correctiveAction: { type: string }
+        preventiveAction: { type: string }
+        ownerId: { type: string, format: uuid }
+        verifierId: { type: string, format: uuid }
+        dueDate: { type: string, format: date }
+
+    CapaPatch:
+      allOf:
+        - $ref: "#/components/schemas/CapaCreate"
+      type: object
+      required: [version]
+      properties:
+        version: { type: integer, description: Base version for OCC }
+        status: { type: string, description: Moves exactly one lifecycle stage forward }
+        effectivenessResult: { type: string, nullable: true }
 
     SecurityApproval:
       type: object
@@ -2293,7 +2751,7 @@ components:
         seq:
           type: integer
           description: Client-assigned strict ordering; the batch is processed in ascending seq (missing/duplicate seq -> whole batch 400)
-        entity: { type: string, enum: [task, project, roadblock, milestone, workstream] }
+        entity: { type: string, enum: [task, project, roadblock, milestone, workstream, action] }
         entityId: { type: string, format: uuid }
         op: { type: string, enum: [update, create] }
         baseVersion: { type: integer, description: ANY mismatch with the server version is a conflict (no LWW) }

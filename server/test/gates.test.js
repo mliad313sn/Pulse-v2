@@ -178,8 +178,10 @@ describe('E05 — gate engine walk IDEA -> CLOSED', () => {
     assert.deepEqual(missingKeys(blocked), ['criticalRoadblocks']);
     assert.match(blocked.body.detail.missing[0].detail, new RegExp(rb.body.id));
 
+    // E11 lifecycle: RESOLVED demands a resolutionNote (forward skip is legal).
     const resolve = await srv.api('PATCH', `/api/roadblocks/${rb.body.id}`, {
-      user: USERS.moussa, body: { version: rb.body.version, status: 'resolved' },
+      user: USERS.moussa,
+      body: { version: rb.body.version, status: 'RESOLVED', resolutionNote: 'Vendor shipped fixed firmware; HA pair re-imaged' },
     });
     assert.equal(resolve.status, 200);
 

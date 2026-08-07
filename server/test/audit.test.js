@@ -23,7 +23,7 @@ describe('audit trail for mutations', () => {
 
     const patched = await srv.api('PATCH', `/api/roadblocks/${id}`, {
       user: USERS.awa,
-      body: { version: 1, status: 'mitigating' },
+      body: { version: 1, status: 'IN_PROGRESS' },
     });
     assert.equal(patched.status, 200);
 
@@ -34,8 +34,8 @@ describe('audit trail for mutations', () => {
     assert.ok(audit.body.every((e) => e.entityType === 'roadblocks'));
     assert.equal(audit.body[0].oldData, null);
     assert.equal(audit.body[0].newData.description, 'Access road flooded');
-    assert.equal(audit.body[1].oldData.status, 'open');
-    assert.equal(audit.body[1].newData.status, 'mitigating');
+    assert.equal(audit.body[1].oldData.status, 'RAISED');
+    assert.equal(audit.body[1].newData.status, 'IN_PROGRESS');
   });
 
   it('task PATCH and approval decisions are audited too', async () => {

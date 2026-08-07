@@ -485,24 +485,161 @@ CREATE TRIGGER trg_dependency_rules
     FOR EACH ROW EXECUTE FUNCTION enforce_dependency_rules();
 
 -- ----------------------------------------------------------------------------
--- Roadblocks — 1-click field logging from site operators
+-- Roadblocks — 1-click field logging from site operators.
+-- E11 (ADR-007): the 3-state enum (open|mitigating|resolved) is REPLACED by
+-- the plan §27 lifecycle RAISED -> ASSIGNED -> IN_PROGRESS -> RESOLVED ->
+-- VERIFIED (data migration mapping: open->RAISED, mitigating->IN_PROGRESS,
+-- resolved->RESOLVED). Transitions are forward-only (skips allowed) except
+-- the explicit REOPEN (RAISED + reopen_reason from RESOLVED/VERIFIED);
+-- RESOLVED requires resolution_note; VERIFIED requires manage-level authority
+-- or the reporter — all enforced in services/entityOps.js (shared by PATCH
+-- and offline sync). escalated/escalated_at are server-managed via
+-- POST /api/roadblocks/:id/escalate only.
 -- ----------------------------------------------------------------------------
 CREATE TABLE roadblocks (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    project_id  UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    task_id     UUID REFERENCES tasks(id) ON DELETE SET NULL,
-    description TEXT NOT NULL,
-    severity    TEXT NOT NULL DEFAULT 'medium'
-                CHECK (severity IN ('low', 'medium', 'high', 'critical')),
-    status      TEXT NOT NULL DEFAULT 'open'
-                CHECK (status IN ('open', 'mitigating', 'resolved')),
-    reported_by UUID REFERENCES users(id),
-    version     INTEGER NOT NULL DEFAULT 1,
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id          UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    task_id             UUID REFERENCES tasks(id) ON DELETE SET NULL,
+    description         TEXT NOT NULL,
+    severity            TEXT NOT NULL DEFAULT 'medium'
+                        CHECK (severity IN ('low', 'medium', 'high', 'critical')),
+    status              TEXT NOT NULL DEFAULT 'RAISED'
+                        CHECK (status IN ('RAISED', 'ASSIGNED', 'IN_PROGRESS', 'RESOLVED', 'VERIFIED')),
+    reported_by         UUID REFERENCES users(id),
+    owner_id            UUID REFERENCES users(id),   -- assignment; setting it while RAISED -> ASSIGNED
+    due_date            DATE,
+    impact              TEXT,
+    resolution_approach TEXT,
+    resolution_note     TEXT,                        -- required by the service for RESOLVED
+    escalated           BOOLEAN NOT NULL DEFAULT false,
+    escalated_at        TIMESTAMPTZ,
+    reopen_reason       TEXT,                        -- required (>=10 chars) for the REOPEN move
+    version             INTEGER NOT NULL DEFAULT 1,
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_roadblocks_project ON roadblocks(project_id);
+CREATE INDEX idx_roadblocks_owner ON roadblocks(owner_id);
+
+-- ----------------------------------------------------------------------------
+-- E09 — Actions (plan §19): lightweight accountability items. project_id is
+-- NULLABLE: NULL = a GENERAL (non-project) action, visible only to its owner,
+-- its creator, and ADMIN (service-enforced read scoping). CANCELLED never
+-- counts as completed anywhere. Actions ride the offline sync protocol.
+-- ----------------------------------------------------------------------------
+CREATE TABLE actions (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id   UUID REFERENCES projects(id) ON DELETE CASCADE,
+    title        TEXT NOT NULL,
+    owner_id     UUID NOT NULL REFERENCES users(id),
+    due_date     DATE,
+    priority     TEXT NOT NULL DEFAULT 'normal'
+                 CHECK (priority IN ('low', 'normal', 'high')),
+    status       TEXT NOT NULL DEFAULT 'OPEN'
+                 CHECK (status IN ('OPEN', 'DONE', 'CANCELLED')),
+    source_type  TEXT NOT NULL DEFAULT 'MANUAL'
+                 CHECK (source_type IN ('MANUAL', 'ROADBLOCK', 'CAPA')),
+    roadblock_id UUID REFERENCES roadblocks(id) ON DELETE SET NULL,
+    capa_id      UUID,   -- FK added after capas is created (below)
+    created_by   UUID REFERENCES users(id),
+    version      INTEGER NOT NULL DEFAULT 1,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_actions_project ON actions(project_id);
+CREATE INDEX idx_actions_owner ON actions(owner_id);
+CREATE INDEX idx_actions_status ON actions(status);
+
+-- ----------------------------------------------------------------------------
+-- E11 — Risks (plan §28): future uncertainty, separate from roadblocks.
+-- inherent_score / residual_score are DERIVED (probability * impact) — the
+-- service computes them on every write and the trigger below is the backstop
+-- so both repositories stay identical. ONLINE-ONLY (no offline sync).
+-- ----------------------------------------------------------------------------
+CREATE TABLE risks (
+    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id           UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    description          TEXT NOT NULL,
+    category             TEXT NOT NULL DEFAULT 'other'
+                         CHECK (category IN ('technical', 'schedule', 'resource', 'security',
+                                             'financial', 'external', 'other')),
+    probability          INTEGER NOT NULL CHECK (probability BETWEEN 1 AND 5),
+    impact               INTEGER NOT NULL CHECK (impact BETWEEN 1 AND 5),
+    inherent_score       INTEGER,
+    treatment            TEXT,
+    owner_id             UUID REFERENCES users(id),
+    target_date          DATE,
+    residual_probability INTEGER CHECK (residual_probability BETWEEN 1 AND 5),
+    residual_impact      INTEGER CHECK (residual_impact BETWEEN 1 AND 5),
+    residual_score       INTEGER,
+    status               TEXT NOT NULL DEFAULT 'OPEN'
+                         CHECK (status IN ('OPEN', 'MITIGATING', 'CLOSED')),
+    version              INTEGER NOT NULL DEFAULT 1,
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_risks_project ON risks(project_id);
+
+-- Backstop for the service rule: scores are derived, never client-supplied.
+CREATE OR REPLACE FUNCTION derive_risk_scores() RETURNS trigger AS $$
+BEGIN
+    NEW.inherent_score := NEW.probability * NEW.impact;
+    NEW.residual_score := CASE
+        WHEN NEW.residual_probability IS NOT NULL AND NEW.residual_impact IS NOT NULL
+        THEN NEW.residual_probability * NEW.residual_impact
+        ELSE NULL
+    END;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_risk_scores
+    BEFORE INSERT OR UPDATE ON risks
+    FOR EACH ROW EXECUTE FUNCTION derive_risk_scores();
+
+-- ----------------------------------------------------------------------------
+-- §29 — CAPA (Corrective and Preventive Action). Lifecycle OPEN -> ANALYSIS ->
+-- ACTION_PLANNED -> IMPLEMENTATION -> VERIFICATION -> CLOSED is forward-only
+-- with NO skips; VERIFICATION requires corrective+preventive actions and
+-- CLOSED requires verifier + effectiveness result (service-enforced;
+-- verified_at is stamped server-side on close). project_id NULLABLE (audit /
+-- incident CAPAs may be org-level: visible to owner/verifier/ADMIN only).
+-- ONLINE-ONLY (no offline sync).
+-- ----------------------------------------------------------------------------
+CREATE TABLE capas (
+    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id           UUID REFERENCES projects(id) ON DELETE CASCADE,
+    source_type          TEXT NOT NULL DEFAULT 'MANUAL'
+                         CHECK (source_type IN ('ROADBLOCK', 'RISK', 'AUDIT', 'INCIDENT', 'REVIEW', 'MANUAL')),
+    source_id            UUID,   -- id of the originating roadblock/risk/... (kind per source_type)
+    issue                TEXT NOT NULL,
+    root_cause           TEXT,
+    immediate_correction TEXT,
+    corrective_action    TEXT,
+    preventive_action    TEXT,
+    owner_id             UUID NOT NULL REFERENCES users(id),
+    verifier_id          UUID REFERENCES users(id),
+    due_date             DATE,
+    status               TEXT NOT NULL DEFAULT 'OPEN'
+                         CHECK (status IN ('OPEN', 'ANALYSIS', 'ACTION_PLANNED', 'IMPLEMENTATION',
+                                           'VERIFICATION', 'CLOSED')),
+    effectiveness_result TEXT,
+    verified_at          TIMESTAMPTZ,
+    version              INTEGER NOT NULL DEFAULT 1,
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_capas_project ON capas(project_id);
+CREATE INDEX idx_capas_owner ON capas(owner_id);
+CREATE INDEX idx_capas_status ON capas(status);
+
+-- actions.capa_id FK (deferred: capas is created after actions).
+ALTER TABLE actions
+    ADD CONSTRAINT fk_actions_capa FOREIGN KEY (capa_id) REFERENCES capas(id) ON DELETE SET NULL;
 
 -- ----------------------------------------------------------------------------
 -- E13 — Project updates (plan §32): the fast "~20 second" status pulse and the
@@ -658,6 +795,12 @@ CREATE TRIGGER trg_audit_gate_requests AFTER INSERT OR UPDATE OR DELETE ON gate_
 CREATE TRIGGER trg_audit_workstreams AFTER INSERT OR UPDATE OR DELETE ON workstreams
     FOR EACH ROW EXECUTE FUNCTION write_audit_log();
 CREATE TRIGGER trg_audit_task_dependencies AFTER INSERT OR UPDATE OR DELETE ON task_dependencies
+    FOR EACH ROW EXECUTE FUNCTION write_audit_log();
+CREATE TRIGGER trg_audit_actions AFTER INSERT OR UPDATE OR DELETE ON actions
+    FOR EACH ROW EXECUTE FUNCTION write_audit_log();
+CREATE TRIGGER trg_audit_risks AFTER INSERT OR UPDATE OR DELETE ON risks
+    FOR EACH ROW EXECUTE FUNCTION write_audit_log();
+CREATE TRIGGER trg_audit_capas AFTER INSERT OR UPDATE OR DELETE ON capas
     FOR EACH ROW EXECUTE FUNCTION write_audit_log();
 -- project_updates are append-only, so only INSERT can ever fire.
 CREATE TRIGGER trg_audit_project_updates AFTER INSERT ON project_updates

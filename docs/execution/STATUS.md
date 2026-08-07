@@ -87,11 +87,17 @@ v3, queue drained; SYNC_HALTED + SYNC_DISCARDED audited). LWW deleted from the c
 Contract v7, OpenAPI 1.5.0. Sync is now an ordered command log per plan §57/§58 + SKILL §15;
 invariants 18-20 fully enforced.
 
+## Completed slice 7: E09 Actions + E11 risk/roadblock/CAPA — DONE
+Verified: 264/264 server tests (65 suites) · scratch-Postgres backstops · typed web build ·
+live journeys (Enter quick-add + 1-tap done; overdue action -> RAG AMBER action-based
+explanation; 5-state roadblock lifecycle incl. escalate/resolutionNote-required/VERIFIED;
+CAPA created from roadblock; risks + CAPA sections render). ADR-007; contract v8; OpenAPI 1.6.0.
+
 ## Next slices (in order)
-1. E09 Actions + E11 roadblock lifecycle upgrade (RAISED→…→VERIFIED) + risks + CAPA.
-2. E22 My Work + Portfolio Wall KPI banner (drill-down) + Site Lens.
-3. E19 notifications hub (in-app first; wires SYNC_HALTED + gate/approval events).
-4. E23 exports expansion (XLSX, filter parity, leakage tests).
+1. E22 My Work + Portfolio Wall KPI banner (drill-down) + Site Lens.
+2. E19 notifications hub (in-app first; wires SYNC_HALTED + gate/approval/escalation events).
+3. E23 exports expansion (XLSX, filter parity, leakage tests).
+4. E12 Deliverables/RACI + E13 completion (decisions, exec commentary).
 
 ## Known plan-vs-v1 conflicts (must be reworked, recorded in DECISIONS.md)
 - v1 LWW auto-merge violates §58/§57 (no silent/auto conflict resolution for core objects).

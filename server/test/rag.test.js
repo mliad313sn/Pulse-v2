@@ -26,7 +26,9 @@ const ms = (over = {}) => ({
   status: 'NOT_STARTED', baselineDue: null, forecastDue: null, updatedAt: daysAgo(1), ...over,
 });
 const task = (over = {}) => ({ status: 'todo', plannedFinish: null, updatedAt: daysAgo(1), ...over });
-const rb = (over = {}) => ({ severity: 'medium', status: 'open', updatedAt: daysAgo(1), ...over });
+const rb = (over = {}) => ({ severity: 'medium', status: 'RAISED', escalated: false, updatedAt: daysAgo(1), ...over });
+// E09: overdueWork is action-driven since this slice (ADR-006 planned the swap).
+const action = (over = {}) => ({ status: 'OPEN', dueDate: null, updatedAt: daysAgo(1), ...over });
 const freshUpdate = () => ({ createdAt: daysAgo(1) });
 
 /** computeRag with a fresh update + healthy defaults, overridable per input. */
@@ -79,36 +81,67 @@ describe('E10 — computeRag (pure engine)', () => {
     });
   });
 
-  describe('roadblocks signal', () => {
-    it('open critical -> RED; open high -> AMBER; resolved -> GREEN', () => {
+  describe('roadblocks signal (E11 lifecycle)', () => {
+    it('open critical -> RED; open high -> AMBER; RESOLVED/VERIFIED -> GREEN', () => {
       const red = rag({ roadblocks: [rb({ severity: 'critical' })] });
       assert.equal(signal(red, 'roadblocks').color, 'RED');
       assert.match(signal(red, 'roadblocks').explanation, /critical roadblock/);
 
-      const amber = rag({ roadblocks: [rb({ severity: 'high', status: 'mitigating' })] });
+      const amber = rag({ roadblocks: [rb({ severity: 'high', status: 'IN_PROGRESS' })] });
       assert.equal(signal(amber, 'roadblocks').color, 'AMBER');
 
+      // RESOLVED and VERIFIED are the ONLY closed states; every other status
+      // (RAISED/ASSIGNED/IN_PROGRESS) counts as open.
       const green = rag({
-        roadblocks: [rb({ severity: 'critical', status: 'resolved' }), rb({ severity: 'medium' })],
+        roadblocks: [
+          rb({ severity: 'critical', status: 'RESOLVED' }),
+          rb({ severity: 'critical', status: 'VERIFIED' }),
+          rb({ severity: 'medium', status: 'ASSIGNED' }),
+        ],
       });
+      assert.equal(signal(green, 'roadblocks').color, 'GREEN');
+    });
+
+    it('an ESCALATED open roadblock of ANY severity -> at least AMBER, said in the explanation', () => {
+      const amber = rag({ roadblocks: [rb({ severity: 'low', escalated: true })] });
+      const s = signal(amber, 'roadblocks');
+      assert.equal(s.color, 'AMBER');
+      assert.match(s.explanation, /1 escalated roadblock open/);
+
+      // Escalated + critical stays RED (worst state wins inside the signal).
+      const red = rag({ roadblocks: [rb({ severity: 'critical', escalated: true })] });
+      assert.equal(signal(red, 'roadblocks').color, 'RED');
+
+      // A RESOLVED escalated roadblock no longer colors the signal.
+      const green = rag({ roadblocks: [rb({ severity: 'low', escalated: true, status: 'RESOLVED' })] });
       assert.equal(signal(green, 'roadblocks').color, 'GREEN');
     });
   });
 
-  describe('overdueWork signal', () => {
-    const overdueTask = () => task({ plannedFinish: dateAgo(2) });
-    it('0 -> GREEN, 1-3 -> AMBER, >=4 -> RED; done tasks excluded', () => {
-      assert.equal(signal(rag({ tasks: [task()] }), 'overdueWork').color, 'GREEN');
-      assert.equal(signal(rag({ tasks: [overdueTask()] }), 'overdueWork').color, 'AMBER');
+  describe('overdueWork signal (E09 — action-driven)', () => {
+    const overdueAction = () => action({ dueDate: dateAgo(2) });
+    it('0 -> GREEN, 1-3 -> AMBER, >=4 -> RED; DONE excluded; CANCELLED never counts', () => {
+      assert.equal(signal(rag({ actions: [action()] }), 'overdueWork').color, 'GREEN');
+      assert.equal(signal(rag({ actions: [overdueAction()] }), 'overdueWork').color, 'AMBER');
       assert.equal(
-        signal(rag({ tasks: [overdueTask(), overdueTask(), overdueTask()] }), 'overdueWork').color,
+        signal(rag({ actions: [overdueAction(), overdueAction(), overdueAction()] }), 'overdueWork').color,
         'AMBER',
       );
-      const red = rag({ tasks: [overdueTask(), overdueTask(), overdueTask(), overdueTask()] });
+      const red = rag({ actions: [overdueAction(), overdueAction(), overdueAction(), overdueAction()] });
       assert.equal(signal(red, 'overdueWork').color, 'RED');
-      assert.equal(signal(red, 'overdueWork').explanation, '4 open tasks past planned finish');
-      const done = rag({ tasks: [task({ status: 'done', plannedFinish: dateAgo(9) })] });
+      assert.equal(signal(red, 'overdueWork').explanation, '4 open actions past due date');
+      const done = rag({ actions: [action({ status: 'DONE', dueDate: dateAgo(9) })] });
       assert.equal(signal(done, 'overdueWork').color, 'GREEN');
+      // CANCELLED is not completion — but it is also not open, so it never
+      // counts on either side of the overdue math.
+      const cancelled = rag({ actions: [action({ status: 'CANCELLED', dueDate: dateAgo(9) })] });
+      assert.equal(signal(cancelled, 'overdueWork').color, 'GREEN');
+    });
+
+    it('overdue TASKS no longer color the signal (the E10 stand-in is removed)', () => {
+      const r = rag({ tasks: [task({ plannedFinish: dateAgo(30) })], actions: [] });
+      assert.equal(signal(r, 'overdueWork').color, 'GREEN');
+      assert.equal(signal(r, 'overdueWork').explanation, 'No open actions past their due date');
     });
   });
 
@@ -185,7 +218,7 @@ describe('E10 — computeRag (pure engine)', () => {
       const r = rag({
         milestones: [ms({ status: 'SLIPPED' })],
         roadblocks: [rb({ severity: 'high' })],
-        tasks: [task({ plannedFinish: dateAgo(1) })],
+        actions: [action({ dueDate: dateAgo(1) })],
         updates: [{ createdAt: daysAgo(25) }],
       });
       assert.deepEqual(r.signals.map((s) => s.key), ['schedule', 'roadblocks', 'overdueWork', 'freshness']);

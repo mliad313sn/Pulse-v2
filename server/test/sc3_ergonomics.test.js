@@ -28,9 +28,11 @@ describe('SC3 — single-request ergonomics with defaults', () => {
     });
     assert.equal(res.status, 201);
     assert.equal(res.body.severity, 'medium'); // default
-    assert.equal(res.body.status, 'open'); // default
+    assert.equal(res.body.status, 'RAISED'); // default (E11 lifecycle)
     assert.equal(res.body.reportedBy, USERS.awa); // defaults to the acting user
     assert.equal(res.body.taskId, null);
+    assert.equal(res.body.ownerId, null); // unassigned until someone takes it
+    assert.equal(res.body.escalated, false);
     assert.equal(res.body.version, 1);
     assert.ok(res.body.id);
   });

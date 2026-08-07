@@ -1,4 +1,4 @@
-# OpsPM360 — API Contract (v7 — offline sync rework: ordered command log, halt-on-first-failure, NO LWW)
+# OpsPM360 — API Contract (v8 — E09 actions + E11 roadblock lifecycle / risks / CAPA)
 
 Shared contract between `server/` (Node.js/Express) and `web/` (Next.js PWA).
 Both sides MUST conform to this document. Base URL: `http://localhost:4000/api`.
@@ -170,9 +170,9 @@ server-side at request time; wire shape `{key, label, satisfied, detail?}`):
 | G0 | IDEA→INITIATION | `title`, `description`, `sponsor`, `owner` |
 | G1 | INITIATION→PLANNING | `description`, `sponsor`, `pm` (PM member exists), `targetDate`, `site` (site or sites[]), `division` |
 | G2 | PLANNING→EXECUTION | `milestones` (≥1 non-cancelled), `team` (PM + ≥1 more member), `baseline` (startDate+targetDate), `acceptanceCriteria` — **steering approver required** |
-| G3 | EXECUTION→DEPLOYMENT | `deploymentPlan`, `criticalRoadblocks` (no open critical roadblocks — severity `critical` & status ≠ `resolved`) |
+| G3 | EXECUTION→DEPLOYMENT | `deploymentPlan`, `criticalRoadblocks` (no open critical roadblocks — severity `critical` & status ∉ {`RESOLVED`, `VERIFIED`} since v8) |
 | G4 | DEPLOYMENT→RUN | `goLive` (a GO_LIVE milestone with status DONE), `supportOwner` |
-| G5 | RUN→CLOSED | `actualEndDate`, `closureSummary`, `openWork` (no open — todo/in_progress/blocked — tasks and no unresolved roadblocks, OR an explicit `dispositionNote` in the request) |
+| G5 | RUN→CLOSED | `actualEndDate`, `closureSummary`, `openWork` (no open — todo/in_progress/blocked — tasks and no open — not RESOLVED/VERIFIED — roadblocks, OR an explicit `dispositionNote` in the request) |
 
 | Endpoint | Behavior |
 |---|---|
@@ -346,6 +346,138 @@ Bootstrap: `GET /api/bootstrap` gains **`updates`** — capped at the **latest
 20 per project** (newest first); the full history stays behind
 `GET /api/projects/:id/updates`.
 
+## Actions (E09, plan §19)
+
+`Action`: **{id, title (required), ownerId (required), dueDate?, priority
+(`low|normal|high`, default `normal`), status (`OPEN|DONE|CANCELLED`, default
+`OPEN`), sourceType (`MANUAL|ROADBLOCK|CAPA`, default `MANUAL`), projectId?
+(nullable — null = a GENERAL, non-project action), roadblockId?, capaId?,
+createdBy (server-stamped to the session user, never client-writable),
+version, updatedAt, createdAt}**.
+
+- **CANCELLED never counts as completed anywhere**: only `DONE` is
+  completion. A CANCELLED action is out of play — excluded from BOTH sides of
+  every count (RAG overdueWork, deck `openActionCount`, My Work).
+- **Visibility**: project-linked actions follow the project's classification
+  + enterprise-access concealment exactly like tasks. **General actions
+  (projectId null) are visible ONLY to their owner, their creator, and
+  ADMIN** — everyone else gets the uniform 404 / absent-from-lists treatment.
+- **Create**: any non-VIEWER may create a **self-owned general** action;
+  assigning a general action to someone else requires ADMIN. Project-linked
+  creates need task-like involvement (manage-level, owner/sponsor, or
+  contributing member) and may then assign any owner.
+- **Update**: the action's **owner or creator**, ADMIN, or (project-linked)
+  manage-level authority. OCC `version` required.
+- `roadblockId`/`capaId` must reference existing rows (400) — informational
+  source traceability.
+
+| Endpoint | Behavior |
+|---|---|
+| `GET /api/actions` (`?projectId=` \| `?mine=1`) | visibility-filtered; `mine=1` narrows to actions the caller owns |
+| `GET /api/projects/:id/actions` | the project's actions — any reader (concealed → 404) |
+| `POST /api/actions` | create (see policy above); bad enum/date/refs → 400 |
+| `PATCH /api/actions/:id` | OCC + write policy; concealed → uniform 404 |
+
+Actions **ride the offline sync protocol** (`entity: "action"`) with the same
+rules (field ops: status/dueDate/title/priority/etc. — identical write policy
+and validation; a general action of someone else blocks as `NOT_FOUND` with no
+serverState), and appear in `GET /api/bootstrap` as **`actions`**.
+
+## Roadblock lifecycle (E11, plan §27 — ADR-007)
+
+`Roadblock`: id, projectId, taskId?, description, severity
+(`low|medium|high|critical`), **status
+(`RAISED|ASSIGNED|IN_PROGRESS|RESOLVED|VERIFIED`, default `RAISED`)**,
+reportedBy, **ownerId?** (assignment), **dueDate?**, **impact?**,
+**resolutionApproach?**, **resolutionNote?**, **escalated** (bool, default
+false), **escalatedAt?**, **reopenReason?**, version, updatedAt, createdAt.
+
+The v7 3-state enum (`open|mitigating|resolved`) is REPLACED. Migration
+mapping: `open`→`RAISED`, `mitigating`→`IN_PROGRESS`, `resolved`→`RESOLVED`.
+"Open" everywhere (RAG, gates G3/G5, deck) now means **status ∉
+{RESOLVED, VERIFIED}**.
+
+**Transition rules** (service-enforced, identical for PATCH and sync — sync
+violations `block` and halt the batch):
+- Status moves are **forward-only** along the sequence (skips allowed —
+  `RAISED → RESOLVED` is legal for a quickly fixed obstacle).
+- The ONE backward move is the explicit **REOPEN**: `PATCH {status:
+  "RAISED", reopenReason}` with **reopenReason ≥ 10 chars** (trimmed), from
+  `RESOLVED`/`VERIFIED` only. Any other backward move → `400 VALIDATION`.
+- Setting `ownerId` while `RAISED` (without an explicit status in the same
+  payload) **implicitly moves the status to `ASSIGNED`**.
+- `RESOLVED` requires a `resolutionNote` (in the payload or already set) →
+  else `400 {field: "resolutionNote"}`.
+- `VERIFIED` requires the actor to hold **manage-level authority or be the
+  roadblock's reporter** (independent verification) → else `403`.
+
+**Escalation** — `POST /api/roadblocks/:id/escalate` (any roadblock writer):
+sets `escalated`/`escalatedAt` (server-managed — PATCH/sync attempts are
+silently ignored, like `ragOverride`), bumps `version`, audits **`ESCALATED`**
+(notification fan-out to admins/leads/owner/PM arrives with E19 — the audit
+event is the hook point). **Idempotent** (already-escalated → 200 unchanged).
+A `RESOLVED`/`VERIFIED` roadblock **cannot be escalated → 400** unless
+reopened first (plan §27).
+
+## Risks (E11, plan §28)
+
+`Risk`: **{id, projectId (required), description (required), category
+(`technical|schedule|resource|security|financial|external|other`, default
+`other`), probability (int 1-5, required), impact (int 1-5, required),
+inherentScore (DERIVED probability×impact — read-only), treatment?, ownerId?,
+targetDate?, residualProbability? (1-5), residualImpact? (1-5), residualScore
+(DERIVED — null unless BOTH residual fields set; read-only), status
+(`OPEN|MITIGATING|CLOSED`, default `OPEN`), version, updatedAt, createdAt}**.
+
+- Scores are recomputed server-side on every write; client-supplied score
+  values are ignored (not writable). DB trigger backstop (`trg_risk_scores`).
+- Out-of-range (non-integer or outside 1-5) probability/impact/residuals →
+  `400 VALIDATION`.
+- **Writes**: exactly the task involvement model — manage-level, project
+  owner/sponsor, contributing member; updates additionally allow the risk's
+  own `ownerId`. VIEWER/uninvolved → 403; concealed → uniform 404.
+- **ONLINE-ONLY**: `risk` is NOT in the offline sync entity set (a sync op
+  naming it blocks as `VALIDATION`) — see ADR-007.
+
+| Endpoint | Behavior |
+|---|---|
+| `GET /api/projects/:id/risks` | the project's risk register — any reader (concealed → 404) |
+| `GET /api/risks` (`?projectId=`) | classification + enterprise-access filtered |
+| `POST /api/risks` · `PATCH /api/risks/:id` | policy above; OCC on PATCH |
+
+Bootstrap: `GET /api/bootstrap` gains **`risks`** (concealment-filtered).
+
+## CAPA (plan §29)
+
+`Capa`: **{id, sourceType (`ROADBLOCK|RISK|AUDIT|INCIDENT|REVIEW|MANUAL`,
+default `MANUAL`), sourceId?, projectId? (nullable — null = org-level CAPA),
+issue (required), rootCause?, immediateCorrection?, correctiveAction?,
+preventiveAction?, ownerId (required), verifierId?, dueDate?, status
+(`OPEN|ANALYSIS|ACTION_PLANNED|IMPLEMENTATION|VERIFICATION|CLOSED`, default
+`OPEN`), effectivenessResult?, verifiedAt (server-stamped on close — never
+writable), version, updatedAt, createdAt}**.
+
+- **Transitions are forward-only with NO skips** (exactly one stage at a
+  time; no reopen path exists yet). Violations → `400 VALIDATION`.
+- **`VERIFICATION` requires `correctiveAction` AND `preventiveAction`**;
+  **`CLOSED` requires `verifierId` AND `effectivenessResult`** (each in the
+  payload or already set); the server stamps `verifiedAt` on close.
+- **Visibility**: project-linked CAPAs follow project concealment; general
+  CAPAs are visible to **owner/verifier/ADMIN** only.
+- **Create**: manage-level (project-linked) or **self-owned** (any
+  non-VIEWER); a general CAPA owned by someone else requires ADMIN.
+- **Update**: the CAPA's **owner or verifier**, ADMIN, or (project-linked)
+  manage-level. OCC `version` required.
+- **ONLINE-ONLY**: `capa` is NOT in the offline sync entity set (ADR-007).
+
+| Endpoint | Behavior |
+|---|---|
+| `GET /api/capas` (`?projectId=`) | visibility-filtered |
+| `POST /api/capas` · `PATCH /api/capas/:id` | policy above; OCC on PATCH |
+| `POST /api/roadblocks/:id/capa` `{issue?, ownerId?, ...}` | **convert-from-roadblock**: manage-level or the roadblock's owner. Creates a CAPA with `sourceType: ROADBLOCK`, `sourceId` and `projectId` prefilled from the roadblock (never client-overridable); `issue` defaults to the roadblock description, `ownerId` to the caller. Concealed roadblock → uniform 404 |
+
+Bootstrap: `GET /api/bootstrap` gains **`capas`** (visibility-filtered).
+
 ## Computed RAG health (E10, plan §24-§26 — ADR-006)
 
 Every project wire object (list, detail, POST/PATCH responses, bootstrap,
@@ -369,10 +501,14 @@ plan §117):
 1. **schedule** — active milestones (not DONE/CANCELLED) that are `SLIPPED`
    or overdue (`forecastDue ?? baselineDue` < today, UTC): none → GREEN;
    ≤20% of active → AMBER; >20% → RED.
-2. **roadblocks** — any open (status ≠ `resolved`) severity `critical` → RED;
-   else any open `high` → AMBER; else GREEN (ADR-006 severity mapping).
-3. **overdueWork** — open (not done) tasks with `plannedFinish` < today:
-   0 → GREEN, 1–3 → AMBER, ≥4 → RED (stands in for E09 actions, ADR-006).
+2. **roadblocks** — open = status ∉ {`RESOLVED`, `VERIFIED`} (E11 lifecycle,
+   ADR-007). Any open severity `critical` → RED; else any open `high` **OR
+   any ESCALATED open roadblock of ANY severity** → AMBER, with the
+   escalation named in the explanation (ADR-006 severity mapping kept).
+3. **overdueWork** — **OPEN actions (E09) with `dueDate` < today**:
+   0 → GREEN, 1–3 → AMBER, ≥4 → RED. The ADR-006 overdue-task stand-in is
+   REMOVED (signal key `overdueWork` unchanged — no wire break); DONE and
+   CANCELLED actions never count (CANCELLED is not completion).
 4. **freshness** — latest ProjectUpdate age ≤21d → GREEN; >21d → AMBER; RED
    when ADDITIONALLY no meaningful activity (latest update / task / milestone
    / roadblock `updatedAt`; project createdAt as last resort) for >30d.
@@ -413,7 +549,9 @@ append-only, not audited (they ARE the record).
 Executive deck: per-project deck data gains `rag {color, computedColor,
 manual (bool), explanation}` — the slide's headline health marker (RAG color
 + MANUAL flag + why), with `overallStatus` kept alongside — and
-`latestUpdate {text, mood, authorId, createdAt} | null`.
+`latestUpdate {text, mood, authorId, createdAt} | null`. Since v8 it also
+carries **`openActionCount`** (status `OPEN` only — DONE/CANCELLED excluded)
+and **`escalatedRoadblockCount`** (escalated AND still open) per project.
 
 ## Error envelope
 ```json
@@ -471,9 +609,11 @@ prerequisite or any FS predecessor not done, OR project security gate pending).
 
 `Workstream` / `TaskDependency`: see Workstreams and Task dependencies (E07).
 
-`Roadblock`: id, projectId, taskId, description, severity
-(`low|medium|high|critical`), status (`open|mitigating|resolved`), reportedBy,
-version, updatedAt, createdAt.
+`Roadblock`: see Roadblock lifecycle (E11) — status
+`RAISED|ASSIGNED|IN_PROGRESS|RESOLVED|VERIFIED` plus ownerId/dueDate/impact/
+resolutionApproach/resolutionNote/escalated/escalatedAt/reopenReason.
+
+`Action` / `Risk` / `Capa`: see Actions (E09), Risks (E11) and CAPA (§29).
 
 `SecurityApproval`: id, projectId, taskId, riskTag, status
 (`pending|approved|rejected`), requestedAt, reviewedBy, reviewedAt, notes.
@@ -481,7 +621,7 @@ version, updatedAt, createdAt.
 ## Endpoints (business — all require a session; classification filter applies to every read)
 | Method & path | Notes |
 |---|---|
-| `GET /api/bootstrap` | `{ user, projects, tasks, roadblocks, approvals, milestones, workstreams, dependencies, updates, pillars, portfolios, programs, serverTime }` — everything the client caches into IndexedDB (concealed projects and their children excluded; projects carry `pmId` + `progress` + `rag`; `updates` capped at the latest 20 per project) |
+| `GET /api/bootstrap` | `{ user, projects, tasks, roadblocks, actions, risks, capas, approvals, milestones, workstreams, dependencies, updates, pillars, portfolios, programs, serverTime }` — everything the client caches into IndexedDB (concealed projects and their children excluded; general actions/capas only for their owner/creator(/verifier)/ADMIN; projects carry `pmId` + `progress` + `rag`; `updates` capped at the latest 20 per project) |
 | `GET /api/projects` / `GET /api/projects/:id` | classification + enterprise-access filtered; concealed → uniform 404; projects carry derived `pmId` |
 | `POST /api/projects` | create (ADMIN or DIVISION_LEAD); body = Project fields minus server-managed (`code` is generated); non-ADMIN classification forced `internal`; unknown portfolioId/programId/sponsorId/engagedDivisions/sites → 400 |
 | `PATCH /api/projects/:id` | body must include `version` (the base version); OCC applies; requires manage-level authority (ADMIN/PM/division lead — else 403); classification change ADMIN-only (403); `code` immutable (400); lifecycleStage gate-governed (400 VALIDATION except ADMIN one-step-backward); operatingStatus transition rules (see Project codes & lifecycle) |
@@ -498,7 +638,11 @@ version, updatedAt, createdAt.
 | `POST /api/tasks` | create — manage-level, contributing member, or project owner/sponsor (else 403; VIEWER always 403) |
 | `PATCH /api/tasks/:id` | body must include `version`; E04 write policy (403) + OCC + gate checks (409/423) |
 | `GET /api/roadblocks` · `POST /api/roadblocks` | POST body: projectId, taskId?, description, severity? — any writer who can read the project (becomes reporter) |
-| `PATCH /api/roadblocks/:id` | E04 write policy (reporter/owner/member/manage) + OCC as above |
+| `PATCH /api/roadblocks/:id` | E04 write policy (reporter/owner/member/manage) + OCC + **E11 lifecycle transition rules** (see Roadblock lifecycle) |
+| `POST /api/roadblocks/:id/escalate` · `POST /api/roadblocks/:id/capa` | see Roadblock lifecycle & CAPA |
+| `GET /api/projects/:id/actions` · `GET/POST /api/actions` · `PATCH /api/actions/:id` | see Actions (E09) |
+| `GET /api/projects/:id/risks` · `GET/POST /api/risks` · `PATCH /api/risks/:id` | see Risks (E11) |
+| `GET/POST /api/capas` · `PATCH /api/capas/:id` | see CAPA (§29) |
 | `GET /api/sites` · `/api/divisions` · `/api/org/tree` · `/api/pillars` · `/api/portfolios` · `/api/programs` (+ POST/PATCH) | see Org administration & Portfolio foundations |
 | `GET /api/approvals?status=pending` | InfoSec queue (classification-filtered) |
 | `POST /api/approvals/:id/decision` | body `{ decision: "approved"\|"rejected", notes? }`; requires the `security_reviewer` privilege; recomputes project securityGateStatus |
@@ -515,7 +659,7 @@ The client queue is an **ordered command log**. Request:
 { "clientId": "device-uuid", "operations": [ {
     "opId": "client-generated-uuid",
     "seq": 1,
-    "entity": "task" | "project" | "roadblock" | "milestone" | "workstream",
+    "entity": "task" | "project" | "roadblock" | "milestone" | "workstream" | "action",
     "entityId": "uuid",
     "op": "update" | "create",
     "baseVersion": 3,
@@ -616,3 +760,6 @@ audit read path applies concealment filtering). Missing/blank `opId`,
 18. **Concurrent updates never silently overwrite newer versions** (plan invariant 18): strict OCC is the ONLY behavior, online (409) and offline (`blocked` VERSION_CONFLICT) — the LWW path is deleted.
 19. **Offline sync preserves client order and stops at the first refused/conflicting op** (plan invariant 19): ascending `seq`, first failure `blocked`, everything after `held` untouched, `SYNC_HALTED` audited.
 20. **The machine never invents a conflict resolution** (plan invariant 20): every conflict goes to human retry/inspect/discard, and a discard is an explicit, audited act (`SYNC_DISCARDED`).
+21. Roadblock lifecycle moves are forward-only (`RAISED→ASSIGNED→IN_PROGRESS→RESOLVED→VERIFIED`, skips allowed); the one backward move is the explicit reopen with a ≥10-char reason; RESOLVED demands a resolutionNote, VERIFIED a manage-level actor or the reporter; escalation is server-managed, audited, idempotent, and impossible on RESOLVED/VERIFIED without a reopen. Identical online and via sync (violations halt the batch).
+22. Action status CANCELLED never counts as completed anywhere; general (projectId-null) actions/CAPAs are concealed from everyone but owner/creator(/verifier)/ADMIN; `createdBy`/`verifiedAt`/`escalated(At)` and risk scores are server-managed (never client-writable).
+23. CAPA transitions move exactly one stage forward (no skips, no reopen); VERIFICATION requires corrective+preventive actions and CLOSED requires verifier+effectiveness result. Risks and CAPAs are online-only (not offline sync entities).

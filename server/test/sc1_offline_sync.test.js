@@ -76,7 +76,7 @@ describe('SC1 — offline sync via POST /api/sync (ordered, halt-on-first-failur
     const created = rbs.body.find((r) => r.id === newRoadblockId);
     assert.ok(created, 'offline-created roadblock present');
     assert.equal(created.severity, 'medium');
-    assert.equal(created.status, 'open');
+    assert.equal(created.status, 'RAISED');
     assert.equal(created.version, 1);
   });
 
@@ -113,7 +113,7 @@ describe('SC1 — offline sync via POST /api/sync (ordered, halt-on-first-failur
             entityId: newRoadblockId,
             op: 'update',
             baseVersion: 1,
-            fields: { status: 'mitigating' },
+            fields: { status: 'IN_PROGRESS' },
           },
         ],
       },
@@ -141,7 +141,7 @@ describe('SC1 — offline sync via POST /api/sync (ordered, halt-on-first-failur
     assert.equal(task.body.version, 3);
     const rbs = await srv.api('GET', `/api/roadblocks?projectId=${SEED.project3}`, { user: USERS.ibrahima });
     const rb = rbs.body.find((r) => r.id === newRoadblockId);
-    assert.equal(rb.status, 'open', 'held op left the roadblock untouched');
+    assert.equal(rb.status, 'RAISED', 'held op left the roadblock untouched');
     assert.equal(rb.version, 1);
 
     // The halt was audited ONCE — actor is the syncing user, source 'sync'.
@@ -177,7 +177,7 @@ describe('SC1 — offline sync via POST /api/sync (ordered, halt-on-first-failur
             entityId: newRoadblockId,
             op: 'update',
             baseVersion: 1,
-            fields: { status: 'mitigating' },
+            fields: { status: 'IN_PROGRESS' },
           },
         ],
       },
@@ -192,7 +192,7 @@ describe('SC1 — offline sync via POST /api/sync (ordered, halt-on-first-failur
     assert.equal(task.body.version, 4);
     const rbs = await srv.api('GET', `/api/roadblocks?projectId=${SEED.project3}`, { user: USERS.ibrahima });
     const rb = rbs.body.find((r) => r.id === newRoadblockId);
-    assert.equal(rb.status, 'mitigating');
+    assert.equal(rb.status, 'IN_PROGRESS');
     assert.equal(rb.version, 2);
   });
 
@@ -238,7 +238,7 @@ describe('SC1 — offline sync via POST /api/sync (ordered, halt-on-first-failur
     const rbs = await srv.api('GET', `/api/roadblocks?projectId=${SEED.project3}`, { user: USERS.ibrahima });
     const rb = rbs.body.find((r) => r.id === newRoadblockId);
     assert.equal(rb.version, 2);
-    assert.equal(rb.status, 'mitigating');
+    assert.equal(rb.status, 'IN_PROGRESS');
   });
 
   it('concealed project -> blocked NOT_FOUND with NO serverState (ADR-005)', async () => {

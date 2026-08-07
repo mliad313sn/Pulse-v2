@@ -61,9 +61,13 @@ describe('SC5 — executive deck extraction', () => {
 
     const ops = data.divisions.find((d) => d.code === 'ops');
     const readiness = ops.projects.find((p) => p.id === SEED.project1);
-    assert.equal(readiness.openRoadblockCount, 1);
+    assert.equal(readiness.openRoadblockCount, 1); // seed roadblock is RAISED = open (E11 enum)
     assert.equal(readiness.blockers[0].description, 'Cooling unit delivery delayed at customs');
     assert.equal(readiness.blockers[0].severity, 'high');
+    assert.equal(readiness.blockers[0].status, 'RAISED');
+    // E09/E11 additions: per-project open action + escalated roadblock counts.
+    assert.equal(readiness.openActionCount, 0);
+    assert.equal(readiness.escalatedRoadblockCount, 0);
     assert.ok(readiness.nextActions.some((t) => t.id === SEED.opsTask));
 
     const infra = data.divisions.find((d) => d.code === 'infra');

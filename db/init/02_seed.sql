@@ -110,9 +110,12 @@ INSERT INTO project_updates (id, project_id, author_id, mood, text, accomplishme
      'Install cooling unit once customs clears',
      now() - interval '1 day');
 
-INSERT INTO roadblocks (project_id, task_id, description, severity, status, reported_by) VALUES
-    ('10000000-0000-0000-0000-000000000001',
+-- E11 lifecycle enum (ADR-007): old 'open' maps to 'RAISED'
+-- (open->RAISED, mitigating->IN_PROGRESS, resolved->RESOLVED).
+INSERT INTO roadblocks (id, project_id, task_id, description, severity, status, reported_by) VALUES
+    ('30000000-0000-0000-0000-000000000001',
+     '10000000-0000-0000-0000-000000000001',
      '20000000-0000-0000-0000-000000000001',
      'Cooling unit delivery delayed at customs',
-     'high', 'open',
+     'high', 'RAISED',
      '00000000-0000-0000-0000-000000000001');

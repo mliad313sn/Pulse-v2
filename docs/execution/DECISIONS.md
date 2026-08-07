@@ -97,3 +97,51 @@ Adaptations made by the E10 slice (`server/src/services/rag.js`, pure and clock-
    PATCH/DELETE routes, DB trigger backstop, not in the offline sync entity set (append-only
    rows carry no OCC version; ADR-003's sync rework should decide how/if they ride offline).
    Revisions per §32 arrive with the full E13 epic.
+
+## ADR-007 — E09/E11 slice: roadblock lifecycle enum migration; which entities ride offline
+Date: 2026-08-07 · Status: accepted
+
+**1. Roadblock enum migration (breaking, plan §27).** The v1 3-state enum
+`open|mitigating|resolved` is replaced by the lifecycle
+`RAISED → ASSIGNED → IN_PROGRESS → RESOLVED → VERIFIED`. Data migration mapping (applied to
+`db/init/02_seed.sql`, the MemoryRepo fixtures, and any deployed data): `open`→`RAISED`,
+`mitigating`→`IN_PROGRESS`, `resolved`→`RESOLVED` (nothing maps to `ASSIGNED`/`VERIFIED` —
+they are new information the old model could not express). "Open" everywhere (RAG roadblocks
+signal, gate checks G3/G5, the deck's blocker lists) now means status ∉ {RESOLVED, VERIFIED}.
+Severities are untouched (`low|medium|high|critical`, ADR-006 mapping kept). Transition rules
+live in `services/entityOps.js` (assertRoadblockLifecycle) and run identically for direct
+PATCH and offline sync (violations halt the batch): forward-only with skips; the single
+backward move is the explicit reopen (`status: RAISED` + `reopenReason` ≥ 10 chars, from
+RESOLVED/VERIFIED); RESOLVED demands `resolutionNote`; VERIFIED demands manage-level authority
+or the reporter; assignment while RAISED implicitly yields ASSIGNED. Escalation is a separate
+server-managed act (`POST /api/roadblocks/:id/escalate` → escalated/escalatedAt + audited
+`ESCALATED`, idempotent, refused 400 on RESOLVED/VERIFIED until reopened); escalated open
+roadblocks of any severity pull the RAG roadblocks signal to at least AMBER. No DB trigger
+enforces the transition graph (the reopen exception plus actor-dependent VERIFIED authz make
+it a service concern per the established services-first rule); the DB contributes the status
+CHECK, the risk-score trigger, and audit.
+
+**2. RAG overdueWork swap (planned by ADR-006 §2).** The overdue-task stand-in is deleted:
+the signal now counts OPEN actions with `dueDate` < today (0 GREEN / 1–3 AMBER / ≥4 RED),
+the key `overdueWork` is unchanged, and explanations name actions. CANCELLED actions never
+count as completed (plan §19): they are excluded from both the open and the done side of every
+count (RAG, deck `openActionCount`, My Work).
+
+**3. Which entities ride offline sync, and why.** `action` is ADDED to the sync entity set
+(`task, project, roadblock, milestone, workstream, action`): actions are exactly the kind of
+1-line accountability item captured on a site tablet in a dead zone ("Network Lead to confirm
+carrier quotation by Friday"), they carry OCC versions, and their write policy/validation is
+shared with PATCH, so offline field ops (status/dueDate/title/priority/…) inherit the halt
+semantics — including roadblock-style lifecycle refusals blocking the batch. **Risks and CAPAs
+stay ONLINE-ONLY for now**: they are deliberate desk-side governance artifacts, not field
+captures; risk scores are server-derived, and CAPA's strict one-stage-forward transition graph
+against stale offline state would mostly produce blocked batches rather than useful offline
+work. A sync op naming `risk`/`capa` is refused as VALIDATION (halting, like any unknown
+entity). Revisit if E22 (My Work) shows a genuine offline demand for either.
+
+**4. General (projectId-null) actions and CAPAs.** Both plan §19 ("general/non-project flag")
+and §29 (audit/incident sources) require rows outside any project's concealment scope. Chosen
+visibility: owner + creator + ADMIN for actions; owner + verifier + ADMIN for CAPAs — the
+uniform-404 concealment machinery applies (never 403 on unreadable rows). Creation of general
+rows is self-owned for any non-VIEWER; assigning someone else without a project scope to
+police it requires ADMIN.
