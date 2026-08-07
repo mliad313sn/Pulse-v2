@@ -2,7 +2,7 @@
 
 Command contract (§109 target): `npm test` per package today; root scripts to be added in E00 completion.
 
-**Current totals: server 216/216 GREEN (52 suites). Web: typed production build clean; browser smokes green (auth flows + Admin Center + project codes/members). Slice-2 suites: org 7, portfolio 5, projectCodes 6 (incl. real-Postgres parallel allocation), members 9, enterpriseAccess 6, lifecycle 5. Slice-4 (E07) suites: workstreams 12, dependencies 18, schedule 6.**
+**Current totals: server 223/223 GREEN (53 suites). Web: typed production build clean; browser smokes green (auth flows + Admin Center + project codes/members). Slice-2 suites: org 7, portfolio 5, projectCodes 6 (incl. real-Postgres parallel allocation), members 9, enterpriseAccess 6, lifecycle 5. Slice-4 (E07) suites: workstreams 12, dependencies 18, schedule 6.**
 
 | Area | Suite | State |
 |---|---|---|
@@ -19,6 +19,6 @@ Command contract (§109 target): `npm test` per package today; root scripts to b
 | Critical path (hand-computed 6-task CPM w/ FS+lag+SS, endpoint round-trip) | server/test/schedule.test.js | GREEN (6) |
 | E07 DB backstops (FS gate, cycle/mismatch/unique/self triggers, audit) | scratch-Postgres smoke (schema+seed apply + trigger drills + PgRepo API round-trip) | GREEN (manual, this slice) |
 | Progress/RAG | milestones + rag/updates suites | GREEN |
-| Offline ordered replay + halt | — | E25 rework |
+| Offline ordered replay + halt | sc1 (rewritten) + sync_halt | GREEN |
 | Export leakage | — | E23 |
 | E2E journeys RA-01…RA-20 | — | per epic |

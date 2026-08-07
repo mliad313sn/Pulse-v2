@@ -79,12 +79,19 @@ JSONB override, snapshots) · typed web build · live browser cycles (Gantt rend
 critical path; update composer posts; RAG explain dialog; override w/ 30-char reason -> MANUAL
 badge -> clear; wrong-persona writes correctly 403'd). Contract v6, OpenAPI 1.4.0, ADR-006.
 
+## Completed slice 6: E25/E26 offline rework (ADR-003 EXECUTED) — DONE
+Verified: 223/223 server tests (53 suites) · typed web build · live browser halt-and-resolve
+walk (offline conflicting edit + queued create -> reconnect -> queue halts, blocked op with
+serverState, held op untouched, header rose state -> per-field human merge -> both applied at
+v3, queue drained; SYNC_HALTED + SYNC_DISCARDED audited). LWW deleted from the codebase.
+Contract v7, OpenAPI 1.5.0. Sync is now an ordered command log per plan §57/§58 + SKILL §15;
+invariants 18-20 fully enforced.
+
 ## Next slices (in order)
-1. E25/E26 rework per ADR-003: strict conflicts (drop LWW), ordered halt-on-refusal offline
-   queue with human retry/discard, admin notification of halted sync.
-2. E09 Actions + E11 roadblock lifecycle upgrade (RAISED→…→VERIFIED) + risks + CAPA.
-3. E22 My Work + Portfolio Wall KPI banner (drill-down) + Site Lens.
-4. E19 notifications hub (in-app first).
+1. E09 Actions + E11 roadblock lifecycle upgrade (RAISED→…→VERIFIED) + risks + CAPA.
+2. E22 My Work + Portfolio Wall KPI banner (drill-down) + Site Lens.
+3. E19 notifications hub (in-app first; wires SYNC_HALTED + gate/approval events).
+4. E23 exports expansion (XLSX, filter parity, leakage tests).
 
 ## Known plan-vs-v1 conflicts (must be reworked, recorded in DECISIONS.md)
 - v1 LWW auto-merge violates §58/§57 (no silent/auto conflict resolution for core objects).

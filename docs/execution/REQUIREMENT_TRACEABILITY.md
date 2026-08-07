@@ -34,15 +34,15 @@ for master-plan completion. Where v1 partially covers an epic it is marked PARTI
 | E22 Dashboards/Analytics | Portfolio Wall, Site Lens, My Work, Exec Center | PARTIAL | v1 role dashboards | smoke | Plan KPIs/drilldowns/My Work missing |
 | E23 Exports | PPTX/PDF/XLSX, filter+authz parity, leakage tests | PARTIAL | v1 exec deck (pptx/pdf) | v1 SC5 | No XLSX, no filter parity, no leakage tests, no scheduled dispatch |
 | E24 Search/Documents | global search, attachments | NOT_STARTED | — | — | |
-| E25 Offline | ordered replay, halt-on-refusal, human retry/discard | PARTIAL | v1 outbox+sync | v1 SC1 | Plan requires ordered halt-on-first-refusal (v1 uses LWW — must be REPLACED, plan forbids auto-merge for core objects) |
-| E26 Concurrency | version conflict UX, no silent overwrite | PARTIAL | v1 OCC + merge screen | v1 | LWW fallback violates plan §58 for core objects — replace with strict conflict |
+| E25 Offline | ordered replay, halt-on-refusal, human retry/discard | **COMPLETE (core)** | seq-ordered command log, halt at first refusal (applied/blocked/held), SYNC_HALTED audit, audited explicit discard, Sync Queue UI w/ per-field human merge | sc1 rewrite (7) + sync_halt (5) GREEN; live browser halt-and-resolve walk | Remaining: admin notification on halt (E19), offline auth-change simulation tests broadened |
+| E26 Concurrency | version conflict UX, no silent overwrite | **COMPLETE (core)** | strict OCC only (LWW deleted), 409+serverState online, blocked+serverState offline, comparison/reapply UX | occ + sc1 suites GREEN; browser walk | Invariants 18-20 now fully enforced |
 | E27 Backup/Recovery/Ops | backup+restore rehearsal, runbooks | NOT_STARTED | — | — | |
 | E28 i18n/A11y/Responsive | EN/FR, WCAG AA, axe smoke | NOT_STARTED | — | — | |
 | E29 Security Hardening | threat model, security suite | NOT_STARTED | — | — | |
 | E30 Release Qualification | full traceability + RA-01…RA-20 | NOT_STARTED | — | — | |
 
 ## Release acceptance journeys (§108)
-RA-09 (RAG signals + override): core PROVEN (engine matrix tests + live browser override cycle w/ MANUAL badge). RA-02 (lifecycle w/ gates): CORE PROVEN for G0 via automated UI walk + API tests for G0-G5 requirements/steering. RA-05 (steering separation): test-proven (ADMIN w/o steering denied G2). RA-08 (computed progress): test-proven. RA-17 partial (409 path), RA-18 pending rework. Others NOT_STARTED.
+RA-18 (offline halt/resolution): core PROVEN via live browser walk (conflict -> halt -> held untouched -> human merge -> drain). RA-17 (no silent overwrite): PROVEN. RA-09 (RAG signals + override): core PROVEN (engine matrix tests + live browser override cycle w/ MANUAL badge). RA-02 (lifecycle w/ gates): CORE PROVEN for G0 via automated UI walk + API tests for G0-G5 requirements/steering. RA-05 (steering separation): test-proven (ADMIN w/o steering denied G2). RA-08 (computed progress): test-proven. RA-17 partial (409 path), RA-18 pending rework. Others NOT_STARTED.
 
 ## Cross-cutting invariants (skill §9)
 Tracked in TEST_MATRIX.md as they gain enforcement + negative tests.
