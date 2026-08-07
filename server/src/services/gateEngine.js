@@ -20,6 +20,7 @@
 import { forbidden, steeringApprovalRequired } from '../errors.js';
 import { LIFECYCLE_STAGES } from './gates.js';
 import { canWrite, hasPrivilege, isAdmin } from './policy.js';
+import { isOpenRoadblock } from './rag.js';
 
 const OPEN_TASK_STATUSES = ['todo', 'in_progress', 'blocked'];
 
@@ -132,8 +133,9 @@ export const GATES = [
         key: 'criticalRoadblocks',
         label: 'No open critical roadblocks',
         check: ({ roadblocks }) => {
+          // E11 lifecycle: open = not RESOLVED and not VERIFIED.
           const open = roadblocks.filter(
-            (r) => r.severity === 'critical' && r.status !== 'resolved',
+            (r) => r.severity === 'critical' && isOpenRoadblock(r),
           );
           return open.length === 0
             ? { satisfied: true }
@@ -172,7 +174,7 @@ export const GATES = [
         label: 'Outstanding work dispositioned',
         check: ({ tasks, roadblocks }, { dispositionNote } = {}) => {
           const openTasks = tasks.filter((t) => OPEN_TASK_STATUSES.includes(t.status));
-          const openRoadblocks = roadblocks.filter((r) => r.status !== 'resolved');
+          const openRoadblocks = roadblocks.filter(isOpenRoadblock);
           if (openTasks.length === 0 && openRoadblocks.length === 0) return { satisfied: true };
           if (has(dispositionNote)) {
             return {

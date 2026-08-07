@@ -14,4 +14,7 @@ export const TABLES = {
   dependency: 'task_dependencies',
   projectUpdate: 'project_updates',
   ragSnapshot: 'rag_snapshots',
+  action: 'actions',
+  risk: 'risks',
+  capa: 'capas',
 };

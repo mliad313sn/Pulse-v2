@@ -28,16 +28,16 @@ export function groupByProject(rows) {
  * E04/E01), and milestones grouped by project (derived `progress` — E08).
  *
  * `{ rag: true }` additionally loads the RAG inputs (tasks, roadblocks,
- * project updates) grouped per project — everything computeRag needs, in ONE
- * pass per request (no N+1). Routes that only filter by readability keep the
- * cheap 3-list load.
+ * actions, project updates) grouped per project — everything computeRag needs,
+ * in ONE pass per request (no N+1). Routes that only filter by readability
+ * keep the cheap 3-list load.
  */
 export async function loadProjectAccess(repo, { rag = false } = {}) {
-  const [projects, members, milestones, tasks, roadblocks, updates] = await Promise.all([
+  const [projects, members, milestones, tasks, roadblocks, actions, updates] = await Promise.all([
     repo.list('project'),
     repo.listProjectMembers(),
     repo.list('milestone'),
-    ...(rag ? [repo.list('task'), repo.list('roadblock'), repo.list('projectUpdate')] : []),
+    ...(rag ? [repo.list('task'), repo.list('roadblock'), repo.list('action'), repo.list('projectUpdate')] : []),
   ]);
   const access = {
     projects,
@@ -47,9 +47,13 @@ export async function loadProjectAccess(repo, { rag = false } = {}) {
   if (rag) {
     access.tasks = tasks;
     access.roadblocks = roadblocks;
+    access.actions = actions;
     access.updates = updates;
     access.tasksByProject = groupByProject(tasks);
     access.roadblocksByProject = groupByProject(roadblocks);
+    // General actions (projectId null) group under the null key and simply
+    // never match a project id — they are personal, not project health.
+    access.actionsByProject = groupByProject(actions);
     access.updatesByProject = groupByProject(updates);
   }
   return access;
@@ -96,6 +100,7 @@ export async function withRagAll(repo, projects, access, now = new Date()) {
       milestones: access.milestonesByProject.get(p.id) ?? [],
       roadblocks: access.roadblocksByProject.get(p.id) ?? [],
       tasks: access.tasksByProject.get(p.id) ?? [],
+      actions: access.actionsByProject?.get(p.id) ?? [],
       updates: access.updatesByProject.get(p.id) ?? [],
       now,
     });
@@ -107,14 +112,15 @@ export async function withRagAll(repo, projects, access, now = new Date()) {
 
 /** Single-project variant of withRagAll, fetching only that project's inputs. */
 export async function withRagOne(repo, project, now = new Date()) {
-  const [milestones, roadblocks, tasks, updates, snapshots] = await Promise.all([
+  const [milestones, roadblocks, tasks, actions, updates, snapshots] = await Promise.all([
     repo.list('milestone', { projectId: project.id }),
     repo.list('roadblock', { projectId: project.id }),
     repo.list('task', { projectId: project.id }),
+    repo.list('action', { projectId: project.id }),
     repo.list('projectUpdate', { projectId: project.id }),
     repo.listRagSnapshots({ projectId: project.id }),
   ]);
-  const rag = computeRag({ project, milestones, roadblocks, tasks, updates, now });
+  const rag = computeRag({ project, milestones, roadblocks, tasks, actions, updates, now });
   await ensureRagSnapshot(repo, project.id, rag, snapshots[snapshots.length - 1]);
   return { ...project, rag };
 }

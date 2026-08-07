@@ -6,6 +6,7 @@
 
 import { useMemo, useState } from "react";
 import { useApp } from "@/lib/store";
+import { MyActions } from "@/components/Actions";
 import TaskCard from "@/components/TaskCard";
 import LogRoadblockButton from "@/components/LogRoadblockButton";
 import NewProjectButton from "@/components/NewProjectButton";
@@ -42,6 +43,8 @@ export default function OpsDashboard() {
         subtitle={`Zen Mode${user?.site ? ` · ${user.site}` : ""} · ${open.length} open`}
         action={<NewProjectButton />}
       />
+
+      <MyActions />
 
       {canWrite && (
         <LogRoadblockButton

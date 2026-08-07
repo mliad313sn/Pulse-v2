@@ -9,6 +9,7 @@ import PDFDocument from 'pdfkit';
 import { computeLocked } from '../services/gates.js';
 import { computeProgress } from '../services/progress.js';
 import { filterReadableProjects } from '../services/policy.js';
+import { isOpenRoadblock } from '../services/rag.js';
 import { groupMembers, newestFirst, withRagAll } from '../routes/helpers.js';
 
 const ACTIVE_STATUSES = ['active', 'at_risk', 'on_hold'];
@@ -58,12 +59,13 @@ function nextMilestone(milestones) {
  * roadblocks, because everything below is grouped under the project.
  */
 export async function buildDeckData(repo, forUser) {
-  const [allDivisions, allProjects, allMembers, tasks, roadblocks, milestones, updates] = await Promise.all([
+  const [allDivisions, allProjects, allMembers, tasks, roadblocks, actions, milestones, updates] = await Promise.all([
     repo.listDivisions(),
     repo.list('project'),
     repo.listProjectMembers(),
     repo.list('task'),
     repo.list('roadblock'),
+    repo.list('action'),
     repo.list('milestone'),
     repo.list('projectUpdate'),
   ]);
@@ -73,11 +75,12 @@ export async function buildDeckData(repo, forUser) {
   const tasksById = new Map(tasks.map((t) => [t.id, t]));
   const tasksByProject = groupByProject(tasks);
   const roadblocksByProject = groupByProject(roadblocks);
+  const actionsByProject = groupByProject(actions);
   const milestonesByProject = groupByProject(milestones);
   const updatesByProject = groupByProject(updates);
   // E10: derived health per project (worst signal wins + explanation).
   const projects = await withRagAll(repo, readable, {
-    milestonesByProject, tasksByProject, roadblocksByProject, updatesByProject,
+    milestonesByProject, tasksByProject, roadblocksByProject, actionsByProject, updatesByProject,
   });
 
   const divisions = [];
@@ -91,8 +94,9 @@ export async function buildDeckData(repo, forUser) {
       code: div.code,
       name: div.name,
       projects: divProjects.map((p) => {
+        // E11 lifecycle: open = not RESOLVED/VERIFIED.
         const open = (roadblocksByProject.get(p.id) ?? [])
-          .filter((r) => r.status !== 'resolved')
+          .filter(isOpenRoadblock)
           .sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
         const nextActions = (tasksByProject.get(p.id) ?? [])
           .filter((t) => t.status !== 'done')
@@ -130,6 +134,12 @@ export async function buildDeckData(repo, forUser) {
           progress: computeProgress(projectMilestones),
           nextMilestone: nextMilestone(projectMilestones),
           openRoadblockCount: open.length,
+          // E11: escalations are an executive attention marker by themselves.
+          escalatedRoadblockCount: open.filter((r) => r.escalated === true).length,
+          // E09: OPEN actions only (DONE complete; CANCELLED never counts as
+          // completed — it is excluded from BOTH sides).
+          openActionCount: (actionsByProject.get(p.id) ?? [])
+            .filter((a) => a.status === 'OPEN').length,
           blockers: open.slice(0, 3).map((r) => ({
             id: r.id, description: r.description, severity: r.severity, status: r.status,
           })),

@@ -86,6 +86,22 @@ export function projectsRouter() {
     res.json(await repo.list('workstream', { projectId: project.id }));
   }));
 
+  // ---- actions (E09) + risks (E11) -----------------------------------------
+
+  /** GET /api/projects/:id/actions — the project's actions; any reader. */
+  router.get('/:id/actions', asyncHandler(async (req, res) => {
+    const repo = req.app.locals.repo;
+    const project = await loadReadableProject(repo, req.user, req.params.id);
+    res.json(await repo.list('action', { projectId: project.id }));
+  }));
+
+  /** GET /api/projects/:id/risks — the project's risk register; any reader. */
+  router.get('/:id/risks', asyncHandler(async (req, res) => {
+    const repo = req.app.locals.repo;
+    const project = await loadReadableProject(repo, req.user, req.params.id);
+    res.json(await repo.list('risk', { projectId: project.id }));
+  }));
+
   router.get('/:id/dependencies', asyncHandler(async (req, res) => {
     const repo = req.app.locals.repo;
     const project = await loadReadableProject(repo, req.user, req.params.id);

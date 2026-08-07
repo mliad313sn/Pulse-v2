@@ -11,9 +11,11 @@ const DB_NAME = "opspm360";
 // v6: added blocked (Wave 3 offline-queue rework, ADR-003 — halt-on-failure
 // sync). The legacy `conflicts` store is kept (empty after the one-shot boot
 // migration in lib/sync.ts) so downgrades/old rows never break the upgrade.
+// v7: added actions (offline outbox entity) + risks + capas (Wave 4 —
+// risks/capas are online-only writes, cached read-only).
 // onupgradeneeded only creates stores that are missing, so upgrades from any
 // prior version are safe.
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 
 export type StoreName =
   | "projects"
@@ -32,7 +34,10 @@ export type StoreName =
   | "milestones"
   | "workstreams"
   | "dependencies"
-  | "updates";
+  | "updates"
+  | "actions"
+  | "risks"
+  | "capas";
 
 const STORE_KEYS: Record<StoreName, string> = {
   projects: "id",
@@ -54,6 +59,9 @@ const STORE_KEYS: Record<StoreName, string> = {
   workstreams: "id",
   dependencies: "id",
   updates: "id",
+  actions: "id",
+  risks: "id",
+  capas: "id",
 };
 
 let dbPromise: Promise<IDBDatabase> | null = null;

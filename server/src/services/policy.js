@@ -217,6 +217,69 @@ export function canPostProjectUpdate(user, project, members = []) {
   return isOwnerOrSponsor(user, project) || isContributingMember(user, members);
 }
 
+// ---- E09 actions / E11 risks + CAPA ----------------------------------------
+
+/**
+ * Action read visibility (E09): project-linked actions follow the project's
+ * concealment; GENERAL actions (projectId null) are personal accountability
+ * items — visible only to their owner, their creator, and ADMIN.
+ */
+export function canReadAction(user, action, project, members = []) {
+  if (!user || user.isActive === false || !action) return false;
+  if (action.projectId != null) return canReadProject(user, project, members);
+  return isAdmin(user) || action.ownerId === user?.id || action.createdBy === user?.id;
+}
+
+/**
+ * Action write (E09): the action's owner or creator may always update it;
+ * ADMIN likewise; project-linked actions additionally accept manage-level
+ * authority on the project. Creates (`action` null) are policed separately in
+ * entityOps (project-linked: task-like involvement; general: self-owned or
+ * ADMIN).
+ */
+export function canWriteAction(user, project, action, members = []) {
+  if (!canWrite(user)) return false;
+  if (isAdmin(user)) return true;
+  if (action != null && (action.ownerId === user.id || action.createdBy === user.id)) return true;
+  return project != null && canManageProjectWork(user, project, members);
+}
+
+/**
+ * Risk write (E11, plan §28): exactly the task involvement model — manage
+ * level, project owner/sponsor, contributing member; updates additionally
+ * allow the risk's own owner. Creates (`risk` null) require involvement (a
+ * non-member cannot smuggle write access by self-owning a new risk).
+ */
+export function canWriteRisk(user, project, risk, members = []) {
+  if (!canWrite(user)) return false;
+  if (canManageProjectWork(user, project, members)) return true;
+  if (isOwnerOrSponsor(user, project) || isContributingMember(user, members)) return true;
+  return risk != null && risk.ownerId === user.id;
+}
+
+/**
+ * CAPA read visibility (§29): project-linked CAPAs follow the project's
+ * concealment; general CAPAs (projectId null) are visible to their owner,
+ * verifier, and ADMIN.
+ */
+export function canReadCapa(user, capa, project, members = []) {
+  if (!user || user.isActive === false || !capa) return false;
+  if (capa.projectId != null) return canReadProject(user, project, members);
+  return isAdmin(user) || capa.ownerId === user?.id || capa.verifierId === user?.id;
+}
+
+/**
+ * CAPA write (§29): the CAPA's owner, its verifier, or manage-level authority
+ * on the linked project (ADMIN always). Creates (`capa` null) are policed in
+ * entityOps (manage-level or self-owned).
+ */
+export function canWriteCapa(user, project, capa, members = []) {
+  if (!canWrite(user)) return false;
+  if (isAdmin(user)) return true;
+  if (capa != null && (capa.ownerId === user.id || capa.verifierId === user.id)) return true;
+  return project != null && canManageProjectWork(user, project, members);
+}
+
 const POLICIES = {
   'project:create': {
     can: canCreateProject,

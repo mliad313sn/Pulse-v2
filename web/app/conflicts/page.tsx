@@ -21,13 +21,17 @@ function fmtValue(v: unknown): string {
 }
 
 function useEntityLabel(entity: SyncEntity, entityId: string): string {
-  const { tasks, projects, roadblocks } = useApp();
+  const { tasks, projects, roadblocks, actions } = useApp();
   return useMemo(() => {
     if (entity === "task") return tasks.find((t) => t.id === entityId)?.title ?? "Task";
     if (entity === "project") return projects.find((p) => p.id === entityId)?.name ?? "Project";
+    if (entity === "action") {
+      const a = actions.find((x) => x.id === entityId);
+      return a ? `Action: ${a.title.slice(0, 60)}` : "Action";
+    }
     const rb = roadblocks.find((r) => r.id === entityId);
     return rb ? `Roadblock: ${rb.description.slice(0, 60)}` : "Roadblock";
-  }, [entity, entityId, tasks, projects, roadblocks]);
+  }, [entity, entityId, tasks, projects, roadblocks, actions]);
 }
 
 function reasonText(entry: BlockedOp): string {

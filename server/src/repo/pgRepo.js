@@ -80,6 +80,33 @@ const COLUMNS = {
   roadblock: {
     id: 'id', projectId: 'project_id', taskId: 'task_id', description: 'description',
     severity: 'severity', status: 'status', reportedBy: 'reported_by',
+    ownerId: 'owner_id', dueDate: 'due_date', impact: 'impact',
+    resolutionApproach: 'resolution_approach', resolutionNote: 'resolution_note',
+    escalated: 'escalated', escalatedAt: 'escalated_at', reopenReason: 'reopen_reason',
+    version: 'version', updatedAt: 'updated_at', createdAt: 'created_at',
+  },
+  action: {
+    id: 'id', projectId: 'project_id', title: 'title', ownerId: 'owner_id',
+    dueDate: 'due_date', priority: 'priority', status: 'status',
+    sourceType: 'source_type', roadblockId: 'roadblock_id', capaId: 'capa_id',
+    createdBy: 'created_by',
+    version: 'version', updatedAt: 'updated_at', createdAt: 'created_at',
+  },
+  risk: {
+    id: 'id', projectId: 'project_id', description: 'description',
+    category: 'category', probability: 'probability', impact: 'impact',
+    inherentScore: 'inherent_score', treatment: 'treatment', ownerId: 'owner_id',
+    targetDate: 'target_date', residualProbability: 'residual_probability',
+    residualImpact: 'residual_impact', residualScore: 'residual_score',
+    status: 'status',
+    version: 'version', updatedAt: 'updated_at', createdAt: 'created_at',
+  },
+  capa: {
+    id: 'id', projectId: 'project_id', sourceType: 'source_type', sourceId: 'source_id',
+    issue: 'issue', rootCause: 'root_cause', immediateCorrection: 'immediate_correction',
+    correctiveAction: 'corrective_action', preventiveAction: 'preventive_action',
+    ownerId: 'owner_id', verifierId: 'verifier_id', dueDate: 'due_date',
+    status: 'status', effectivenessResult: 'effectiveness_result', verifiedAt: 'verified_at',
     version: 'version', updatedAt: 'updated_at', createdAt: 'created_at',
   },
   approval: {
@@ -97,6 +124,10 @@ const DATE_ONLY = {
   milestone: new Set(['baselineDue', 'forecastDue', 'actualCompleted']),
   task: new Set(['plannedStart', 'plannedFinish']),
   workstream: new Set(['startDate', 'endDate']),
+  roadblock: new Set(['dueDate']),
+  action: new Set(['dueDate']),
+  risk: new Set(['targetDate']),
+  capa: new Set(['dueDate']),
 };
 
 function mapRow(kind, row) {

@@ -37,10 +37,15 @@ import {
   assertUpdateBusinessRules, createEntity, pickWritable,
   recordLifecycleCorrection, runTaskGates,
 } from './entityOps.js';
-import { assertCan, canReadProject } from './policy.js';
+import { assertCan, canReadAction, canReadProject } from './policy.js';
 import { ensureSecurityRouting } from './securityRouting.js';
 
-const ENTITIES = ['task', 'project', 'roadblock', 'milestone', 'workstream'];
+// E09: actions ride the offline sync protocol (field-level accountability
+// edits from site tablets). Risks and CAPAs are deliberately ONLINE-ONLY
+// (ADR-007): they are deliberate desk-side governance artifacts with
+// transition rules that want fresh server state — a sync op naming them is
+// refused like any unknown entity.
+const ENTITIES = ['task', 'project', 'roadblock', 'milestone', 'workstream', 'action'];
 
 export async function processSyncBatch(repo, user, body) {
   if (!body || typeof body.clientId !== 'string' || body.clientId.length === 0) {
@@ -208,6 +213,11 @@ async function processOperation(repo, user, op) {
       : null;
     const members = scopeProject ? await repo.listProjectMembers(scopeProject.id) : [];
     if (!current || (scopeProject && !canReadProject(user, scopeProject, members))) {
+      throw new ApiError(404, 'NOT_FOUND', `${kind} ${op.entityId} not found`);
+    }
+    // E09: general (projectId null) actions are concealed from everyone but
+    // their owner/creator/ADMIN — same uniform NOT_FOUND, no serverState.
+    if (kind === 'action' && !canReadAction(user, current, scopeProject, members)) {
       throw new ApiError(404, 'NOT_FOUND', `${kind} ${op.entityId} not found`);
     }
 

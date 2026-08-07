@@ -1,8 +1,9 @@
 "use client";
 
-// Project detail — Kanban board (drag-and-drop + touch fallback), roadblocks, audit peek.
+// Project detail — Kanban board (drag-and-drop + touch fallback), actions,
+// roadblock lifecycle, risks, CAPA, audit peek.
 
-import { use, useMemo } from "react";
+import { use, useMemo, useState } from "react";
 import Link from "next/link";
 import { useApp } from "@/lib/store";
 import Kanban from "@/components/Kanban";
@@ -15,35 +16,34 @@ import Milestones from "@/components/Milestones";
 import Workstreams from "@/components/Workstreams";
 import UpdateComposer from "@/components/UpdateComposer";
 import UpdatesFeed from "@/components/UpdatesFeed";
+import { ProjectActions } from "@/components/Actions";
+import Risks from "@/components/Risks";
+import Capas from "@/components/Capas";
+import RoadblockDialog from "@/components/RoadblockDialog";
 import { RagExplainButton } from "@/components/RagExplain";
 import { PageHeader } from "@/components/Headings";
 import LogRoadblockButton from "@/components/LogRoadblockButton";
 import {
   ClassificationBadge,
   CountPill,
+  EscalatedBadge,
   LifecycleChip,
   OperatingStatusBadge,
-  Pill,
   ProjectCodeChip,
   ProjectStatusBadge,
+  RoadblockStatusBadge,
   SecurityGateBadge,
   SeverityBadge,
   TagChip,
 } from "@/components/Badges";
 import { GanttIcon, PlusIcon, ScaleIcon } from "@/components/Icons";
 import { SkeletonBoard } from "@/components/Skeleton";
-import { divisionMeta, fmtDateTime, cn } from "@/lib/utils";
-import type { RoadblockStatus } from "@/lib/types";
-
-const RB_NEXT: Record<RoadblockStatus, { label: string; next: RoadblockStatus } | null> = {
-  open: { label: "Start mitigating", next: "mitigating" },
-  mitigating: { label: "Mark resolved", next: "resolved" },
-  resolved: null,
-};
+import { divisionMeta, fmtDate, fmtDateTime, cn, isRoadblockClosed } from "@/lib/utils";
 
 export default function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const { projects, roadblocks, users, updateRoadblock, bootLoading, openRoadblock, canWrite } = useApp();
+  const { projects, roadblocks, users, bootLoading, openRoadblock, canWrite } = useApp();
+  const [roadblockDetail, setRoadblockDetail] = useState<string | null>(null);
 
   const project = projects.find((p) => p.id === id);
   const projectRoadblocks = useMemo(
@@ -78,7 +78,7 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   }
 
   const div = divisionMeta(project.division);
-  const openRbs = projectRoadblocks.filter((r) => r.status !== "resolved");
+  const openRbs = projectRoadblocks.filter((r) => !isRoadblockClosed(r.status));
   const pm = project.pmId ? users.find((u) => u.id === project.pmId) : null;
   const sponsor = project.sponsorId ? users.find((u) => u.id === project.sponsorId) : null;
 
@@ -165,6 +165,8 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
         </div>
       </section>
 
+      <ProjectActions projectId={project.id} />
+
       <Kanban projectId={project.id} />
 
       <Workstreams project={project} />
@@ -196,47 +198,66 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
           <div className="space-y-3">
             {projectRoadblocks.map((rb) => {
               const reporter = users.find((u) => u.id === rb.reportedBy);
-              const action = RB_NEXT[rb.status];
+              const owner = rb.ownerId ? users.find((u) => u.id === rb.ownerId) : null;
+              const closed = isRoadblockClosed(rb.status);
+              const overdue =
+                !closed && rb.dueDate ? Date.parse(rb.dueDate) < Date.now() - 86_400_000 : false;
               return (
-                <div
+                <button
                   key={rb.id}
+                  type="button"
+                  onClick={() => setRoadblockDetail(rb.id)}
+                  title="Open roadblock details"
                   className={cn(
-                    "rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800",
-                    rb.status === "resolved" && "opacity-60",
+                    "block w-full rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:border-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-slate-500",
+                    closed && "opacity-60",
                   )}
                 >
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <p className="min-w-0 flex-1 leading-snug">{rb.description}</p>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {rb.escalated && <EscalatedBadge escalatedAt={rb.escalatedAt} />}
                       <SeverityBadge severity={rb.severity} />
-                      <Pill className="bg-slate-100 capitalize text-slate-600 dark:bg-slate-700 dark:text-slate-300">
-                        {rb.status}
-                      </Pill>
+                      <RoadblockStatusBadge status={rb.status} />
                     </div>
                   </div>
                   <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
-                    <span>
-                      {reporter ? `Reported by ${reporter.name} · ` : ""}
-                      {fmtDateTime(rb.createdAt || rb.updatedAt)}
+                    <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <span>{owner ? `Owner: ${owner.name}` : "Unowned"}</span>
+                      {rb.dueDate && (
+                        <span className={cn(overdue && "font-semibold text-rose-600 dark:text-rose-400")}>
+                          Due {fmtDate(rb.dueDate)}
+                        </span>
+                      )}
+                      <span>
+                        {reporter ? `Reported by ${reporter.name} · ` : ""}
+                        {fmtDateTime(rb.createdAt || rb.updatedAt)}
+                      </span>
                     </span>
-                    {action && canWrite && (
-                      <button
-                        type="button"
-                        onClick={() => void updateRoadblock(rb.id, { status: action.next })}
-                        className="min-h-[36px] rounded-lg border border-slate-300 px-3 text-xs font-medium text-slate-600 transition hover:border-slate-400 dark:border-slate-600 dark:text-slate-300"
-                      >
-                        {action.label}
-                      </button>
-                    )}
+                    <span className="font-medium text-indigo-600 dark:text-indigo-400">
+                      {canWrite ? "Manage" : "Details"}
+                    </span>
                   </div>
-                </div>
+                </button>
               );
             })}
           </div>
         )}
       </section>
 
+      <Risks project={project} />
+
+      <Capas project={project} />
+
       <AuditPeek entityId={project.id} />
+
+      {roadblockDetail &&
+        (() => {
+          const rb = projectRoadblocks.find((r) => r.id === roadblockDetail);
+          return rb ? (
+            <RoadblockDialog roadblock={rb} project={project} onClose={() => setRoadblockDetail(null)} />
+          ) : null;
+        })()}
     </div>
   );
 }

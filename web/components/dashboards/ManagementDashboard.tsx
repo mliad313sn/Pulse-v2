@@ -6,7 +6,8 @@ import { useMemo, useState } from "react";
 import { useApp } from "@/lib/store";
 import { useToast } from "@/components/Toast";
 import { apiBlob } from "@/lib/api";
-import { cn, divisionMeta, DIVISION_META, PROJECT_STATUS_META, RAG_COLORS } from "@/lib/utils";
+import { MyActions } from "@/components/Actions";
+import { cn, divisionMeta, DIVISION_META, isRoadblockClosed, PROJECT_STATUS_META, RAG_COLORS } from "@/lib/utils";
 import type { Project, ProjectStatus, RagColor } from "@/lib/types";
 import ProjectCard from "@/components/ProjectCard";
 import NewProjectButton from "@/components/NewProjectButton";
@@ -73,7 +74,7 @@ export default function ManagementDashboard() {
       if (row) row.blockedTasks += 1;
     }
     for (const r of roadblocks) {
-      if (r.status === "resolved") continue;
+      if (isRoadblockClosed(r.status)) continue;
       const row = rows.get(projectDivision.get(r.projectId) ?? "");
       if (row) row.openRoadblocks += 1;
     }
@@ -113,7 +114,7 @@ export default function ManagementDashboard() {
         title="Portfolio health"
         subtitle={
           <>
-            All divisions · {projects.length} projects · {roadblocks.filter((r) => r.status !== "resolved").length} open
+            All divisions · {projects.length} projects · {roadblocks.filter((r) => !isRoadblockClosed(r.status)).length} open
             roadblocks
           </>
         }
@@ -141,6 +142,8 @@ export default function ManagementDashboard() {
           </div>
         }
       />
+
+      <MyActions />
 
       {bootLoading && projects.length === 0 ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">

@@ -15,7 +15,8 @@ export type SecurityGateStatus = "not_required" | "pending" | "approved" | "reje
 export type TaskStatus = "todo" | "in_progress" | "blocked" | "done";
 export type TaskPriority = "low" | "normal" | "high" | "critical";
 export type RoadblockSeverity = "low" | "medium" | "high" | "critical";
-export type RoadblockStatus = "open" | "mitigating" | "resolved";
+/** Wave 4 lifecycle — transitions are forward-only; reopen = back to RAISED with a reason. */
+export type RoadblockStatus = "RAISED" | "ASSIGNED" | "IN_PROGRESS" | "RESOLVED" | "VERIFIED";
 export type ApprovalStatus = "pending" | "approved" | "rejected";
 
 export type BaseRole = "ADMIN" | "DIVISION_LEAD" | "CONTRIBUTOR" | "VIEWER";
@@ -328,8 +329,111 @@ export interface Roadblock {
   severity: RoadblockSeverity;
   status: RoadblockStatus;
   reportedBy?: string | null;
+  // ---- Wave 4 lifecycle fields ----
+  ownerId?: string | null;
+  dueDate?: string | null;
+  impact?: string | null;
+  resolutionApproach?: string | null;
+  /** Required by the server when moving to RESOLVED. */
+  resolutionNote?: string | null;
+  escalated?: boolean;
+  escalatedAt?: string | null;
+  /** ≥10 chars, required when reopening (status back to RAISED). */
+  reopenReason?: string | null;
   version: number;
   updatedAt: string;
+  createdAt?: string;
+}
+
+// ---- Actions (Wave 4 — offline-capable, ride the outbox like tasks) ---------
+
+export type ActionPriority = "low" | "normal" | "high";
+export type ActionStatus = "OPEN" | "DONE" | "CANCELLED";
+export type ActionSourceType = "MANUAL" | "ROADBLOCK" | "CAPA";
+
+export interface Action {
+  id: string;
+  title: string;
+  ownerId: string;
+  dueDate?: string | null;
+  priority: ActionPriority;
+  status: ActionStatus;
+  sourceType: ActionSourceType;
+  projectId?: string | null;
+  roadblockId?: string | null;
+  capaId?: string | null;
+  createdBy: string;
+  version: number;
+  updatedAt: string;
+  createdAt?: string;
+}
+
+// ---- Risks (Wave 4 — ONLINE-ONLY) -------------------------------------------
+
+export type RiskCategory =
+  | "technical"
+  | "schedule"
+  | "resource"
+  | "security"
+  | "financial"
+  | "external"
+  | "other";
+
+export type RiskStatus = "OPEN" | "MITIGATING" | "CLOSED";
+
+export interface Risk {
+  id: string;
+  projectId: string;
+  description: string;
+  category: RiskCategory;
+  /** 1-5 */
+  probability: number;
+  /** 1-5 */
+  impact: number;
+  /** Derived server-side: probability × impact. */
+  inherentScore: number;
+  treatment?: string | null;
+  ownerId?: string | null;
+  targetDate?: string | null;
+  residualProbability?: number | null;
+  residualImpact?: number | null;
+  /** Derived server-side: residual pair product, or null when unset. */
+  residualScore?: number | null;
+  status: RiskStatus;
+  version: number;
+  updatedAt?: string;
+  createdAt?: string;
+}
+
+// ---- CAPA (Wave 4 — ONLINE-ONLY) --------------------------------------------
+
+export type CapaSourceType = "ROADBLOCK" | "RISK" | "AUDIT" | "INCIDENT" | "REVIEW" | "MANUAL";
+
+export type CapaStatus =
+  | "OPEN"
+  | "ANALYSIS"
+  | "ACTION_PLANNED"
+  | "IMPLEMENTATION"
+  | "VERIFICATION"
+  | "CLOSED";
+
+export interface Capa {
+  id: string;
+  sourceType: CapaSourceType;
+  sourceId?: string | null;
+  projectId?: string | null;
+  issue: string;
+  rootCause?: string | null;
+  immediateCorrection?: string | null;
+  correctiveAction?: string | null;
+  preventiveAction?: string | null;
+  ownerId: string;
+  verifierId?: string | null;
+  dueDate?: string | null;
+  status: CapaStatus;
+  effectivenessResult?: string | null;
+  version: number;
+  updatedAt?: string;
   createdAt?: string;
 }
 
@@ -444,10 +548,14 @@ export interface Bootstrap {
   dependencies?: TaskDependency[];
   /** Latest ~20 updates per project. */
   updates?: ProjectUpdate[];
+  /** Wave 4: actions ride the offline outbox; risks/capas are ONLINE-ONLY reads. */
+  actions?: Action[];
+  risks?: Risk[];
+  capas?: Capa[];
   serverTime: string;
 }
 
-export type SyncEntity = "task" | "project" | "roadblock";
+export type SyncEntity = "task" | "project" | "roadblock" | "action";
 
 /** Outbox operation — exact wire shape of an item in POST /api/sync `operations`. */
 export interface SyncOp {

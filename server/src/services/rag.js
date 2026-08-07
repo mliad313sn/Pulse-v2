@@ -8,13 +8,18 @@
  *   1. schedule    — active (not DONE/CANCELLED) milestones that are SLIPPED
  *                    or overdue (forecastDue ?? baselineDue < today):
  *                    none -> GREEN; <=20% of active -> AMBER; >20% -> RED.
- *   2. roadblocks  — any open (status != resolved) severity 'critical' -> RED;
- *                    else any open 'high' -> AMBER; else GREEN.
- *                    (ADR-006: v2 severities map critical->CRITICAL, high->MAJOR.)
- *   3. overdueWork — tasks not done/cancelled with plannedFinish < today:
+ *   2. roadblocks  — open = status NOT IN (RESOLVED, VERIFIED) (E11 lifecycle
+ *                    per ADR-007). Any open severity 'critical' -> RED; else
+ *                    any open 'high' OR any ESCALATED open roadblock of ANY
+ *                    severity -> AMBER (plan §27: escalation is a health
+ *                    event by itself). (ADR-006 severity mapping:
+ *                    critical->CRITICAL, high->MAJOR.)
+ *   3. overdueWork — OPEN actions (E09) with dueDate < today:
  *                    0 -> GREEN, 1-3 -> AMBER, >=4 -> RED.
- *                    (ADR-006: stands in for the plan's overdue ACTIONS until
- *                    E09 lands; the signal key 'overdueWork' stays stable.)
+ *                    (ADR-006 planned this swap: the key 'overdueWork' is
+ *                    unchanged; the overdue-TASK stand-in is removed. DONE and
+ *                    CANCELLED actions never count — CANCELLED is not
+ *                    completion, it is simply out of play.)
  *   4. freshness   — latest ProjectUpdate age: <=21d -> GREEN; >21d -> AMBER;
  *                    RED when ADDITIONALLY there has been no meaningful
  *                    activity (latest update createdAt / task / milestone /
@@ -71,33 +76,43 @@ function scheduleSignal(milestones, today) {
   };
 }
 
+/** E11 lifecycle: a roadblock is open unless RESOLVED or VERIFIED. */
+export const isOpenRoadblock = (r) => r.status !== 'RESOLVED' && r.status !== 'VERIFIED';
+
 function roadblocksSignal(roadblocks) {
   const signal = { key: 'roadblocks', label: 'Roadblocks' };
-  const open = roadblocks.filter((r) => r.status !== 'resolved');
+  const open = roadblocks.filter(isOpenRoadblock);
   const critical = open.filter((r) => r.severity === 'critical').length;
   if (critical > 0) {
     return { ...signal, color: 'RED', explanation: `${plural(critical, 'critical roadblock')} open` };
   }
+  // Escalated open roadblocks of ANY severity are at least AMBER (plan §27).
   const high = open.filter((r) => r.severity === 'high').length;
-  if (high > 0) {
-    return { ...signal, color: 'AMBER', explanation: `${plural(high, 'high-severity roadblock')} open` };
+  const escalated = open.filter((r) => r.escalated === true).length;
+  if (high > 0 || escalated > 0) {
+    const parts = [];
+    if (high > 0) parts.push(`${plural(high, 'high-severity roadblock')} open`);
+    if (escalated > 0) parts.push(`${plural(escalated, 'escalated roadblock')} open`);
+    return { ...signal, color: 'AMBER', explanation: parts.join('; ') };
   }
-  return { ...signal, color: 'GREEN', explanation: 'No open critical or high-severity roadblocks' };
+  return { ...signal, color: 'GREEN', explanation: 'No open critical, high-severity, or escalated roadblocks' };
 }
 
-function overdueWorkSignal(tasks, today) {
+function overdueWorkSignal(actions, today) {
   const signal = { key: 'overdueWork', label: 'Overdue work' };
-  const overdue = tasks.filter(
-    (t) => t.status !== 'done' && t.status !== 'cancelled'
-      && t.plannedFinish != null && t.plannedFinish < today,
+  // E09: OPEN actions past their due date. DONE actions are complete;
+  // CANCELLED actions NEVER count as completed — they are out of play, so
+  // neither bucket includes them.
+  const overdue = actions.filter(
+    (a) => a.status === 'OPEN' && a.dueDate != null && a.dueDate < today,
   ).length;
   if (overdue === 0) {
-    return { ...signal, color: 'GREEN', explanation: 'No open tasks past their planned finish' };
+    return { ...signal, color: 'GREEN', explanation: 'No open actions past their due date' };
   }
   return {
     ...signal,
     color: overdue >= 4 ? 'RED' : 'AMBER',
-    explanation: `${plural(overdue, 'open task')} past planned finish`,
+    explanation: `${plural(overdue, 'open action')} past due date`,
   };
 }
 
@@ -151,21 +166,21 @@ function freshnessSignal({ project, milestones, roadblocks, tasks, updates, now 
 
 /**
  * @param {{project: object, milestones?: object[], roadblocks?: object[],
- *          tasks?: object[], updates?: object[], now?: Date}} input
+ *          tasks?: object[], actions?: object[], updates?: object[], now?: Date}} input
  * @returns {{color: 'GREEN'|'AMBER'|'RED', computedColor: 'GREEN'|'AMBER'|'RED',
  *           manual: null|{color:string, reason:string, byId:string, at:string},
  *           signals: Array<{key:string, color:string, label:string, explanation:string}>,
  *           explanation: string}}
  */
 export function computeRag({
-  project, milestones = [], roadblocks = [], tasks = [], updates = [], now = new Date(),
+  project, milestones = [], roadblocks = [], tasks = [], actions = [], updates = [], now = new Date(),
 }) {
   const today = now.toISOString().slice(0, 10);
 
   const signals = [
     scheduleSignal(milestones, today),
     roadblocksSignal(roadblocks),
-    overdueWorkSignal(tasks, today),
+    overdueWorkSignal(actions, today),
     freshnessSignal({ project, milestones, roadblocks, tasks, updates, now }),
   ];
 

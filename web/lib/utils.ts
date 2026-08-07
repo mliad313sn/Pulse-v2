@@ -1,4 +1,8 @@
 import type {
+  Action,
+  ActionPriority,
+  CapaSourceType,
+  CapaStatus,
   DependencyType,
   Division,
   LifecycleStage,
@@ -12,7 +16,10 @@ import type {
   ProjectRole,
   ProjectStatus,
   RagColor,
+  RiskCategory,
+  RiskStatus,
   RoadblockSeverity,
+  RoadblockStatus,
   Task,
   TaskStatus,
   UpdateMood,
@@ -415,6 +422,203 @@ export const SEVERITY_META: Record<RoadblockSeverity, { label: string; chip: str
     selected: "bg-rose-600 border-rose-600 text-white",
   },
 };
+
+// ---- Roadblock lifecycle (Wave 4) -------------------------------------------
+
+export const ROADBLOCK_STATUSES: RoadblockStatus[] = [
+  "RAISED",
+  "ASSIGNED",
+  "IN_PROGRESS",
+  "RESOLVED",
+  "VERIFIED",
+];
+
+export const ROADBLOCK_STATUS_META: Record<
+  RoadblockStatus,
+  { label: string; badge: string; dot: string }
+> = {
+  RAISED: {
+    label: "Raised",
+    badge: "bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300",
+    dot: "bg-rose-500",
+  },
+  ASSIGNED: {
+    label: "Assigned",
+    badge: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300",
+    dot: "bg-indigo-500",
+  },
+  IN_PROGRESS: {
+    label: "In progress",
+    badge: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
+    dot: "bg-blue-500",
+  },
+  RESOLVED: {
+    label: "Resolved",
+    badge: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300",
+    dot: "bg-emerald-500",
+  },
+  VERIFIED: {
+    label: "Verified",
+    badge: "bg-teal-100 text-teal-700 dark:bg-teal-900/50 dark:text-teal-300",
+    dot: "bg-teal-500",
+  },
+};
+
+/**
+ * Forward-only quick advances. IN_PROGRESS → RESOLVED is intentionally absent:
+ * resolving requires a resolutionNote, so it goes through the Resolve flow.
+ * RESOLVED → VERIFIED is the Verify affordance (authz-gated in the UI).
+ */
+export const ROADBLOCK_NEXT: Partial<Record<RoadblockStatus, { label: string; next: RoadblockStatus }>> = {
+  RAISED: { label: "Mark assigned", next: "ASSIGNED" },
+  ASSIGNED: { label: "Start work", next: "IN_PROGRESS" },
+};
+
+/** RESOLVED and VERIFIED are the closed end of the lifecycle. */
+export function isRoadblockClosed(status: RoadblockStatus): boolean {
+  return status === "RESOLVED" || status === "VERIFIED";
+}
+
+/** Minimum characters the server requires for a reopen reason. */
+export const ROADBLOCK_REOPEN_MIN = 10;
+
+// ---- Actions (Wave 4) --------------------------------------------------------
+
+export const ACTION_PRIORITIES: ActionPriority[] = ["low", "normal", "high"];
+
+export const ACTION_PRIORITY_META: Record<ActionPriority, { label: string; chip: string }> = {
+  low: { label: "Low", chip: "border-slate-300 text-slate-500 dark:border-slate-600 dark:text-slate-400" },
+  normal: { label: "Normal", chip: "border-slate-300 text-slate-600 dark:border-slate-600 dark:text-slate-300" },
+  high: { label: "High", chip: "border-rose-300 text-rose-700 dark:border-rose-700 dark:text-rose-400" },
+};
+
+/** Overdue = OPEN with a due date earlier than today (dueDate is date-only). */
+export function isActionOverdue(action: Pick<Action, "dueDate" | "status">): boolean {
+  if (!action.dueDate || action.status !== "OPEN") return false;
+  const due = Date.parse(action.dueDate.slice(0, 10));
+  if (Number.isNaN(due)) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return due < today.getTime();
+}
+
+/** True when an ISO timestamp falls on the local calendar day of "now". */
+export function isToday(iso: string | null | undefined): boolean {
+  if (!iso) return false;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return false;
+  const now = new Date();
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  );
+}
+
+// ---- Risks (Wave 4 — ONLINE-ONLY) -------------------------------------------
+
+export const RISK_CATEGORIES: RiskCategory[] = [
+  "technical",
+  "schedule",
+  "resource",
+  "security",
+  "financial",
+  "external",
+  "other",
+];
+
+export const RISK_CATEGORY_META: Record<RiskCategory, { label: string; chip: string }> = {
+  technical: { label: "Technical", chip: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300" },
+  schedule: { label: "Schedule", chip: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300" },
+  resource: { label: "Resource", chip: "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300" },
+  security: { label: "Security", chip: "bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300" },
+  financial: { label: "Financial", chip: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300" },
+  external: { label: "External", chip: "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300" },
+  other: { label: "Other", chip: "bg-slate-100 text-slate-600 dark:bg-slate-700/60 dark:text-slate-300" },
+};
+
+export const RISK_STATUSES: RiskStatus[] = ["OPEN", "MITIGATING", "CLOSED"];
+
+export const RISK_STATUS_META: Record<RiskStatus, { label: string; badge: string; dot: string }> = {
+  OPEN: {
+    label: "Open",
+    badge: "bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300",
+    dot: "bg-rose-500",
+  },
+  MITIGATING: {
+    label: "Mitigating",
+    badge: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300",
+    dot: "bg-amber-500",
+  },
+  CLOSED: {
+    label: "Closed",
+    badge: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300",
+    dot: "bg-emerald-500",
+  },
+};
+
+/** 1-25 P×I score tone: ≥15 rose, ≥8 amber, else slate. */
+export function riskScoreTone(score: number | null | undefined): string {
+  if (typeof score !== "number") {
+    return "bg-slate-100 text-slate-500 dark:bg-slate-700/60 dark:text-slate-400";
+  }
+  if (score >= 15) return "bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300";
+  if (score >= 8) return "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300";
+  return "bg-slate-100 text-slate-600 dark:bg-slate-700/60 dark:text-slate-300";
+}
+
+// ---- CAPA (Wave 4 — ONLINE-ONLY) --------------------------------------------
+
+export const CAPA_STATUSES: CapaStatus[] = [
+  "OPEN",
+  "ANALYSIS",
+  "ACTION_PLANNED",
+  "IMPLEMENTATION",
+  "VERIFICATION",
+  "CLOSED",
+];
+
+export const CAPA_STATUS_META: Record<CapaStatus, { label: string; badge: string; dot: string }> = {
+  OPEN: {
+    label: "Open",
+    badge: "bg-rose-100 text-rose-700 dark:bg-rose-900/50 dark:text-rose-300",
+    dot: "bg-rose-500",
+  },
+  ANALYSIS: {
+    label: "Analysis",
+    badge: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300",
+    dot: "bg-amber-500",
+  },
+  ACTION_PLANNED: {
+    label: "Action planned",
+    badge: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300",
+    dot: "bg-indigo-500",
+  },
+  IMPLEMENTATION: {
+    label: "Implementation",
+    badge: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
+    dot: "bg-blue-500",
+  },
+  VERIFICATION: {
+    label: "Verification",
+    badge: "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300",
+    dot: "bg-violet-500",
+  },
+  CLOSED: {
+    label: "Closed",
+    badge: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300",
+    dot: "bg-emerald-500",
+  },
+};
+
+export const CAPA_SOURCE_TYPES: CapaSourceType[] = [
+  "ROADBLOCK",
+  "RISK",
+  "AUDIT",
+  "INCIDENT",
+  "REVIEW",
+  "MANUAL",
+];
 
 export const DIVISION_META: Record<string, { label: string; short: string; accent: string }> = {
   ops: { label: "Operations", short: "OPS", accent: "bg-emerald-500" },

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { asyncHandler } from './middleware.js';
 import { loadProjectAccess, newestFirst, withLocked, withPmAll, withRagAll } from './helpers.js';
-import { filterReadableProjects, readableProjectIds } from '../services/policy.js';
+import { filterReadableProjects, isAdmin, readableProjectIds } from '../services/policy.js';
 import { publicUser } from '../services/auth.js';
 import { dependencyWire } from './dependencies.js';
 
@@ -13,17 +13,19 @@ export function bootstrapRouter() {
   const router = Router();
   router.get('/', asyncHandler(async (req, res) => {
     const repo = req.app.locals.repo;
-    const [access, approvals, pillars, portfolios, programs, workstreams, dependencies] =
+    const [access, approvals, pillars, portfolios, programs, workstreams, dependencies, risks, capas] =
       await Promise.all([
-        loadProjectAccess(repo, { rag: true }), // projects/members/milestones + RAG inputs
+        loadProjectAccess(repo, { rag: true }), // projects/members/milestones + RAG inputs (incl. actions)
         repo.list('approval'),
         repo.list('pillar'),
         repo.list('portfolio'),
         repo.list('program'),
         repo.list('workstream'),
         repo.list('dependency'),
+        repo.list('risk'),
+        repo.list('capa'),
       ]);
-    const { projects, membersByProject, milestonesByProject, tasks, roadblocks } = access;
+    const { projects, membersByProject, milestonesByProject, tasks, roadblocks, actions } = access;
     // ADR-005 + E01 enterprise access: concealed projects (and their children)
     // never reach the client cache.
     const visibleProjects = filterReadableProjects(req.user, projects, membersByProject);
@@ -47,6 +49,17 @@ export function bootstrapRouter() {
         repo, withPmAll(visibleProjects, membersByProject, milestonesByProject), access),
       tasks: await withLocked(repo, visibleTasks, { tasks, projects, dependencies }),
       roadblocks: roadblocks.filter((r) => visible.has(r.projectId)),
+      // E09: project-linked actions follow project concealment; GENERAL
+      // actions (projectId null) only reach their owner/creator (or ADMIN).
+      actions: actions.filter((a) => (a.projectId != null
+        ? visible.has(a.projectId)
+        : isAdmin(req.user) || a.ownerId === req.user.id || a.createdBy === req.user.id)),
+      // E11/§29: risks + capas are cached for reading; they are ONLINE-ONLY
+      // (not part of the offline sync entity set — ADR-007).
+      risks: risks.filter((r) => visible.has(r.projectId)),
+      capas: capas.filter((c) => (c.projectId != null
+        ? visible.has(c.projectId)
+        : isAdmin(req.user) || c.ownerId === req.user.id || c.verifierId === req.user.id)),
       approvals: approvals.filter((a) => visible.has(a.projectId)),
       milestones,
       workstreams: workstreams.filter((w) => visible.has(w.projectId)),

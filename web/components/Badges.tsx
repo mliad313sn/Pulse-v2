@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 import {
+  CAPA_STATUS_META,
+  CAPA_STATUSES,
   cn,
   LIFECYCLE_META,
   LIFECYCLE_STAGES,
@@ -7,12 +9,16 @@ import {
   MILESTONE_TYPE_META,
   OPERATING_STATUS_META,
   PROJECT_STATUS_META,
+  RISK_STATUS_META,
+  riskScoreTone,
+  ROADBLOCK_STATUS_META,
   SEVERITY_META,
   STATUS_META,
   titleCaseTag,
   WORKSTREAM_STATUS_META,
 } from "@/lib/utils";
 import type {
+  CapaStatus,
   GateDecision,
   LifecycleStage,
   MilestoneStatus,
@@ -20,12 +26,14 @@ import type {
   OperatingStatus,
   ProjectClassification,
   ProjectStatus,
+  RiskStatus,
   RoadblockSeverity,
+  RoadblockStatus,
   SecurityGateStatus,
   TaskStatus,
   WorkstreamStatus,
 } from "@/lib/types";
-import { EyeOffIcon, FlagIcon, LockIcon, ScaleIcon, ShieldCheckIcon, ShieldIcon } from "./Icons";
+import { EyeOffIcon, FlagIcon, FlameIcon, LockIcon, ScaleIcon, ShieldCheckIcon, ShieldIcon } from "./Icons";
 
 /** Base rounded pill shell shared by every badge. */
 export function Pill({
@@ -79,6 +87,84 @@ export function ProjectStatusBadge({ status }: { status: ProjectStatus }) {
 export function SeverityBadge({ severity }: { severity: RoadblockSeverity }) {
   const meta = SEVERITY_META[severity] ?? SEVERITY_META.medium;
   return <Pill className={cn("border", meta.chip)}>{meta.label}</Pill>;
+}
+
+/** 5-state roadblock lifecycle pill (Wave 4). */
+export function RoadblockStatusBadge({ status }: { status: RoadblockStatus }) {
+  const meta = ROADBLOCK_STATUS_META[status] ?? ROADBLOCK_STATUS_META.RAISED;
+  return (
+    <Pill className={cn("gap-1.5", meta.badge)}>
+      <span className={cn("h-1.5 w-1.5 rounded-full", meta.dot)} />
+      {meta.label}
+    </Pill>
+  );
+}
+
+/** Flame badge for escalated roadblocks. */
+export function EscalatedBadge({ escalatedAt }: { escalatedAt?: string | null }) {
+  return (
+    <Pill
+      title={escalatedAt ? `Escalated ${escalatedAt.slice(0, 10)}` : "Escalated to leadership"}
+      className="gap-1 bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300"
+    >
+      <FlameIcon className="h-3.5 w-3.5" />
+      Escalated
+    </Pill>
+  );
+}
+
+export function RiskStatusBadge({ status }: { status: RiskStatus }) {
+  const meta = RISK_STATUS_META[status] ?? RISK_STATUS_META.OPEN;
+  return (
+    <Pill className={cn("gap-1.5", meta.badge)}>
+      <span className={cn("h-1.5 w-1.5 rounded-full", meta.dot)} />
+      {meta.label}
+    </Pill>
+  );
+}
+
+/** P×I score pill on the 1-25 color scale (≥15 rose, ≥8 amber, else slate). */
+export function RiskScorePill({
+  score,
+  title,
+  className,
+}: {
+  score: number | null | undefined;
+  title?: string;
+  className?: string;
+}) {
+  return (
+    <Pill title={title} className={cn("font-bold tabular-nums", riskScoreTone(score), className)}>
+      {typeof score === "number" ? score : "—"}
+    </Pill>
+  );
+}
+
+/** 6-state CAPA stepper chip — dots with the current state highlighted (like LifecycleChip). */
+export function CapaStatusChip({ status }: { status: CapaStatus }) {
+  const meta = CAPA_STATUS_META[status] ?? CAPA_STATUS_META.OPEN;
+  const idx = CAPA_STATUSES.indexOf(status);
+  return (
+    <Pill
+      title={`CAPA state ${idx + 1} of ${CAPA_STATUSES.length}: ${meta.label}`}
+      className="gap-2 border border-slate-200 bg-white text-slate-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300"
+    >
+      <span className="flex items-center gap-[3px]">
+        {CAPA_STATUSES.map((s, i) => (
+          <span
+            key={s}
+            className={cn(
+              "rounded-full",
+              i === idx ? cn("h-2 w-2", meta.dot) : "h-1.5 w-1.5",
+              i < idx && "bg-slate-400 dark:bg-slate-500",
+              i > idx && "bg-slate-200 dark:bg-slate-700",
+            )}
+          />
+        ))}
+      </span>
+      {meta.label}
+    </Pill>
+  );
 }
 
 export function LockBadge({ reason }: { reason: string }) {

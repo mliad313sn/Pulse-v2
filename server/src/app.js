@@ -23,6 +23,9 @@ import { gateRequestsRouter } from './routes/gates.js';
 import { tasksRouter } from './routes/tasks.js';
 import { updatesRouter } from './routes/updates.js';
 import { roadblocksRouter } from './routes/roadblocks.js';
+import { actionsRouter } from './routes/actions.js';
+import { risksRouter } from './routes/risks.js';
+import { capasRouter } from './routes/capas.js';
 import { approvalsRouter } from './routes/approvals.js';
 import { auditRouter } from './routes/audit.js';
 import { syncRouter } from './routes/sync.js';
@@ -76,6 +79,9 @@ export function createApp({ repo, authProvider = createEntraProvider() }) {
   app.use('/api/tasks', tasksRouter());
   app.use('/api/updates', updatesRouter()); // E13 core (append-only: POST only)
   app.use('/api/roadblocks', roadblocksRouter());
+  app.use('/api/actions', actionsRouter()); // E09 core (rides offline sync)
+  app.use('/api/risks', risksRouter()); // E11 risks (online-only)
+  app.use('/api/capas', capasRouter()); // §29 CAPA (online-only)
   app.use('/api/approvals', approvalsRouter());
   app.use('/api/audit', auditRouter());
   app.use('/api/sync', syncRouter());

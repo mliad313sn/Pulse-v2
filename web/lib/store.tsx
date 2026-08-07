@@ -35,8 +35,13 @@ import {
 import { canDecideApprovals, canWriteUser, isGatedTransition, safeLocalRemove, uuid } from "./utils";
 import { useToast } from "@/components/Toast";
 import type {
+  Action,
+  ActionPriority,
   Bootstrap,
   BlockedOp,
+  Capa,
+  CapaSourceType,
+  CapaStatus,
   DependencyType,
   LoginResponse,
   Milestone,
@@ -45,6 +50,9 @@ import type {
   ProjectUpdate,
   QueuedOp,
   RagColor,
+  Risk,
+  RiskCategory,
+  RiskStatus,
   Roadblock,
   RoadblockSeverity,
   RoadblockTarget,
@@ -78,15 +86,19 @@ const IDB_STORES: idb.StoreName[] = [
   "workstreams",
   "dependencies",
   "updates",
+  "actions",
+  "risks",
+  "capas",
 ];
 
-type EntityListKey = "projects" | "tasks" | "roadblocks";
+type EntityListKey = "projects" | "tasks" | "roadblocks" | "actions";
 
 // Doubles as the API path segment (`/api/${ENTITY_TO_LIST[entity]}/…`).
 const ENTITY_TO_LIST: Record<SyncEntity, EntityListKey> = {
   project: "projects",
   task: "tasks",
   roadblock: "roadblocks",
+  action: "actions",
 };
 
 export interface AppState {
@@ -107,6 +119,12 @@ export interface AppState {
   dependencies: TaskDependency[];
   /** Project updates (append-only, ONLINE-ONLY writes; hydrated from bootstrap). */
   updates: ProjectUpdate[];
+  /** Wave 4 actions — offline-capable, ride the outbox like tasks/roadblocks. */
+  actions: Action[];
+  /** Wave 4 risks — ONLINE-ONLY writes; cached read-only. */
+  risks: Risk[];
+  /** Wave 4 CAPAs — ONLINE-ONLY writes; cached read-only. */
+  capas: Capa[];
   /** Ops the server refused — while any exist the sync queue is HALTED (0 or 1). */
   blocked: BlockedOp[];
   /** Waiting (held/queued) ops in send (`seq`) order. */
@@ -150,6 +168,54 @@ interface AppActions {
     description: string;
     severity: RoadblockSeverity;
   }) => Promise<MutateOutcome>;
+  /** ONLINE-ONLY one-click escalation (server records who/when; audited). */
+  escalateRoadblock: (id: string) => Promise<MutateOutcome>;
+  /** Offline-capable create — actions ride the outbox like tasks/roadblocks. */
+  createAction: (input: {
+    title: string;
+    ownerId?: string;
+    dueDate?: string | null;
+    priority?: ActionPriority;
+    projectId?: string | null;
+  }) => Promise<MutateOutcome>;
+  /** Offline-capable update (status Done, edits) via the outbox. */
+  updateAction: (id: string, fields: Partial<Action>) => Promise<MutateOutcome>;
+  /** ONLINE-ONLY (never queued). */
+  createRisk: (input: {
+    projectId: string;
+    description: string;
+    category: RiskCategory;
+    probability: number;
+    impact: number;
+    treatment?: string | null;
+    ownerId?: string | null;
+    targetDate?: string | null;
+    residualProbability?: number | null;
+    residualImpact?: number | null;
+    status?: RiskStatus;
+  }) => Promise<MutateOutcome>;
+  /** ONLINE-ONLY. OCC via version. */
+  updateRisk: (id: string, fields: Partial<Risk>) => Promise<MutateOutcome>;
+  /** ONLINE-ONLY (never queued). */
+  createCapa: (input: {
+    sourceType: CapaSourceType;
+    sourceId?: string | null;
+    projectId?: string | null;
+    issue: string;
+    rootCause?: string | null;
+    immediateCorrection?: string | null;
+    correctiveAction?: string | null;
+    preventiveAction?: string | null;
+    ownerId: string;
+    verifierId?: string | null;
+    dueDate?: string | null;
+    status?: CapaStatus;
+    effectivenessResult?: string | null;
+  }) => Promise<MutateOutcome>;
+  /** ONLINE-ONLY. OCC via version. */
+  updateCapa: (id: string, fields: Partial<Capa>) => Promise<MutateOutcome>;
+  /** ONLINE-ONLY: POST /api/roadblocks/:id/capa — server prefills the CAPA. */
+  convertRoadblockToCapa: (roadblockId: string) => Promise<MutateOutcome>;
   decideApproval: (
     approvalId: string,
     decision: "approved" | "rejected",
@@ -251,6 +317,9 @@ const INITIAL_STATE: AppState = {
   workstreams: [],
   dependencies: [],
   updates: [],
+  actions: [],
+  risks: [],
+  capas: [],
   blocked: [],
   queuedOps: [],
   online: true,
@@ -332,7 +401,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // ---- local entity helpers -------------------------------------------------
 
   const setEntity = useCallback(
-    (listKey: EntityListKey, item: Project | Task | Roadblock) => {
+    (listKey: EntityListKey, item: Project | Task | Roadblock | Action) => {
       patch((prev) => ({ [listKey]: upsert(prev[listKey] as { id: string }[], item) }) as Partial<AppState>);
       void idb.put(listKey, item);
     },
@@ -494,6 +563,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const projects = rebase(boot.projects ?? [], "project");
       const tasks = rebase(boot.tasks ?? [], "task");
       const roadblocks = rebase(boot.roadblocks ?? [], "roadblock");
+      const actions = rebase(boot.actions ?? [], "action");
       const approvals = boot.approvals ?? [];
       // Milestone/workstream/dependency mutations are online-only (never queued)
       // — no rebase needed.
@@ -502,15 +572,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const dependencies = boot.dependencies ?? [];
       // Updates are append-only + online-only (never queued) — no rebase needed.
       const updates = boot.updates ?? [];
+      // Risk/CAPA mutations are online-only (never queued) — no rebase needed.
+      const risks = boot.risks ?? [];
+      const capas = boot.capas ?? [];
       await Promise.all([
         idb.replaceAll("projects", projects),
         idb.replaceAll("tasks", tasks),
         idb.replaceAll("roadblocks", roadblocks),
+        idb.replaceAll("actions", actions),
         idb.replaceAll("approvals", approvals),
         idb.replaceAll("milestones", milestones),
         idb.replaceAll("workstreams", workstreams),
         idb.replaceAll("dependencies", dependencies),
         idb.replaceAll("updates", updates),
+        idb.replaceAll("risks", risks),
+        idb.replaceAll("capas", capas),
         idb.setMeta("refreshedAt", boot.serverTime),
         boot.user ? idb.setMeta("currentUser", boot.user) : Promise.resolve(),
       ]);
@@ -518,11 +594,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         projects,
         tasks,
         roadblocks,
+        actions,
         approvals,
         milestones,
         workstreams,
         dependencies,
         updates,
+        risks,
+        capas,
         refreshedAt: boot.serverTime ?? new Date().toISOString(),
         user: boot.user ?? s.user,
         bootLoading: false,
@@ -562,6 +641,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       workstreams: [],
       dependencies: [],
       updates: [],
+      actions: [],
+      risks: [],
+      capas: [],
       blocked: [],
       queuedOps: [],
       outboxCount: 0,
@@ -646,7 +728,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (denied) return denied;
       const listKey = ENTITY_TO_LIST[entity];
       const s = stateRef.current;
-      const current = (s[listKey] as Array<Project | Task | Roadblock>).find((x) => x.id === entityId);
+      const current = (s[listKey] as Array<Project | Task | Roadblock | Action>).find((x) => x.id === entityId);
       if (!current) return { ok: false, code: "NOT_FOUND" };
       const baseVersion = current.version ?? 1;
       const optimistic = { ...current, ...fields, updatedAt: new Date().toISOString() };
@@ -745,8 +827,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         taskId: input.taskId ?? null,
         description: input.description,
         severity: input.severity,
-        status: "open",
+        status: "RAISED",
         reportedBy: s.user?.id ?? null,
+        escalated: false,
         version: 1,
         updatedAt: now,
         createdAt: now,
@@ -766,7 +849,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             taskId: input.taskId ?? null,
             description: input.description,
             severity: input.severity,
-            status: "open",
+            status: "RAISED",
             reportedBy: s.user?.id ?? null,
           },
         });
@@ -803,6 +886,363 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
     },
     [setEntity, removeEntity, toast, refreshQueue, guardWrite],
+  );
+
+  // ---- Wave 4: roadblock escalation (ONLINE-ONLY, one-click) ----------------
+
+  const escalateRoadblock = useCallback(
+    async (id: string): Promise<MutateOutcome> => {
+      const denied = guardWrite();
+      if (denied) return denied;
+      if (!stateRef.current.online) {
+        toast("Escalating needs a live connection — leadership is notified immediately.", "warning");
+        return { ok: false, code: "OFFLINE" };
+      }
+      const current = stateRef.current.roadblocks.find((r) => r.id === id);
+      if (!current) return { ok: false, code: "NOT_FOUND" };
+      try {
+        const res = await api<unknown>(`/api/roadblocks/${id}/escalate`, { method: "POST" });
+        if (looksLikeEntity(res)) {
+          setEntity("roadblocks", res as unknown as Roadblock);
+        } else {
+          setEntity("roadblocks", {
+            ...current,
+            escalated: true,
+            escalatedAt: new Date().toISOString(),
+          });
+        }
+        toast("Roadblock escalated to leadership.", "success");
+        return { ok: true };
+      } catch (e) {
+        if (e instanceof ApiError) {
+          const message =
+            e.status === 400
+              ? e.message || "This roadblock is already resolved — reopen it instead of escalating."
+              : e.message || `Escalation rejected (${e.code}).`;
+          return { ok: false, code: e.code, message };
+        }
+        toast("Network error — roadblock not escalated.", "error");
+        return { ok: false, code: "NETWORK" };
+      }
+    },
+    [guardWrite, toast, setEntity],
+  );
+
+  // ---- Wave 4: actions (offline-capable — ride the outbox) ------------------
+
+  const createAction = useCallback(
+    async (input: {
+      title: string;
+      ownerId?: string;
+      dueDate?: string | null;
+      priority?: ActionPriority;
+      projectId?: string | null;
+    }): Promise<MutateOutcome> => {
+      const denied = guardWrite();
+      if (denied) return denied;
+      const s = stateRef.current;
+      const me = s.user?.id ?? "";
+      const now = new Date().toISOString();
+      const id = uuid();
+      const local: Action = {
+        id,
+        title: input.title,
+        ownerId: input.ownerId || me,
+        dueDate: input.dueDate ?? null,
+        priority: input.priority ?? "normal",
+        status: "OPEN",
+        sourceType: "MANUAL",
+        projectId: input.projectId ?? null,
+        roadblockId: null,
+        capaId: null,
+        createdBy: me,
+        version: 1,
+        updatedAt: now,
+        createdAt: now,
+      };
+      setEntity("actions", local);
+
+      const queueIt = async (): Promise<MutateOutcome> => {
+        await enqueueOp({
+          opId: uuid(),
+          entity: "action",
+          entityId: id,
+          op: "create",
+          baseVersion: 0,
+          clientUpdatedAt: now,
+          fields: {
+            title: local.title,
+            ownerId: local.ownerId,
+            dueDate: local.dueDate,
+            priority: local.priority,
+            status: "OPEN",
+            sourceType: "MANUAL",
+            projectId: local.projectId,
+          },
+        });
+        await refreshQueue();
+        return { ok: true, queued: true };
+      };
+
+      if (!s.online) return queueIt();
+
+      try {
+        const res = await api<unknown>("/api/actions", {
+          method: "POST",
+          body: {
+            title: local.title,
+            ownerId: local.ownerId,
+            dueDate: local.dueDate ?? undefined,
+            priority: local.priority,
+            projectId: local.projectId ?? undefined,
+            sourceType: "MANUAL",
+          },
+        });
+        if (looksLikeEntity(res) && (res as { id: string }).id !== id) {
+          removeEntity("actions", id);
+          setEntity("actions", res as unknown as Action);
+        } else if (looksLikeEntity(res)) {
+          setEntity("actions", res as unknown as Action);
+        }
+        return { ok: true };
+      } catch (e) {
+        if (e instanceof ApiError && e.status >= 400 && e.status < 500) {
+          removeEntity("actions", id);
+          toast(e.message || "Could not add the action.", "error");
+          return { ok: false, code: e.code };
+        }
+        return queueIt();
+      }
+    },
+    [setEntity, removeEntity, toast, refreshQueue, guardWrite],
+  );
+
+  const updateAction = useCallback(
+    (id: string, fields: Partial<Action>) => mutateEntity("action", id, fields as Record<string, unknown>),
+    [mutateEntity],
+  );
+
+  // ---- Wave 4: risks (ONLINE-ONLY, like milestones) -------------------------
+
+  const setRisk = useCallback(
+    (r: Risk) => {
+      patch((prev) => ({ risks: upsert(prev.risks, r) }));
+      void idb.put("risks", r);
+    },
+    [patch],
+  );
+
+  const createRisk = useCallback(
+    async (input: {
+      projectId: string;
+      description: string;
+      category: RiskCategory;
+      probability: number;
+      impact: number;
+      treatment?: string | null;
+      ownerId?: string | null;
+      targetDate?: string | null;
+      residualProbability?: number | null;
+      residualImpact?: number | null;
+      status?: RiskStatus;
+    }): Promise<MutateOutcome> => {
+      const denied = guardWrite();
+      if (denied) return denied;
+      if (!stateRef.current.online) {
+        toast("Risk changes need a live connection.", "warning");
+        return { ok: false, code: "OFFLINE" };
+      }
+      try {
+        const res = await api<unknown>("/api/risks", {
+          method: "POST",
+          body: {
+            projectId: input.projectId,
+            description: input.description,
+            category: input.category,
+            probability: input.probability,
+            impact: input.impact,
+            treatment: input.treatment || undefined,
+            ownerId: input.ownerId || undefined,
+            targetDate: input.targetDate || undefined,
+            residualProbability: input.residualProbability ?? undefined,
+            residualImpact: input.residualImpact ?? undefined,
+            status: input.status || undefined,
+          },
+        });
+        if (looksLikeEntity(res)) setRisk(res as unknown as Risk);
+        return { ok: true };
+      } catch (e) {
+        if (e instanceof ApiError) {
+          return { ok: false, code: e.code, message: e.message };
+        }
+        toast("Network error — risk not created.", "error");
+        return { ok: false, code: "NETWORK" };
+      }
+    },
+    [guardWrite, toast, setRisk],
+  );
+
+  const updateRisk = useCallback(
+    async (id: string, fields: Partial<Risk>): Promise<MutateOutcome> => {
+      const denied = guardWrite();
+      if (denied) return denied;
+      if (!stateRef.current.online) {
+        toast("Risk changes need a live connection.", "warning");
+        return { ok: false, code: "OFFLINE" };
+      }
+      const current = stateRef.current.risks.find((r) => r.id === id);
+      if (!current) return { ok: false, code: "NOT_FOUND" };
+      try {
+        const res = await api<unknown>(`/api/risks/${id}`, {
+          method: "PATCH",
+          body: { ...fields, version: current.version ?? 1 },
+        });
+        if (looksLikeEntity(res)) {
+          setRisk(res as unknown as Risk);
+        } else {
+          setRisk({ ...current, ...fields, version: (current.version ?? 1) + 1 });
+        }
+        return { ok: true };
+      } catch (e) {
+        if (e instanceof ApiError) {
+          if (e.status === 409) {
+            if (looksLikeEntity(e.serverState)) setRisk(e.serverState as unknown as Risk);
+            toast("Someone else updated this risk first — refreshed to the latest version.", "warning");
+            return { ok: false, code: e.code };
+          }
+          return { ok: false, code: e.code, message: e.message };
+        }
+        toast("Network error — risk not updated.", "error");
+        return { ok: false, code: "NETWORK" };
+      }
+    },
+    [guardWrite, toast, setRisk],
+  );
+
+  // ---- Wave 4: CAPA (ONLINE-ONLY, like milestones) --------------------------
+
+  const setCapa = useCallback(
+    (c: Capa) => {
+      patch((prev) => ({ capas: upsert(prev.capas, c) }));
+      void idb.put("capas", c);
+    },
+    [patch],
+  );
+
+  const createCapa = useCallback(
+    async (input: {
+      sourceType: CapaSourceType;
+      sourceId?: string | null;
+      projectId?: string | null;
+      issue: string;
+      rootCause?: string | null;
+      immediateCorrection?: string | null;
+      correctiveAction?: string | null;
+      preventiveAction?: string | null;
+      ownerId: string;
+      verifierId?: string | null;
+      dueDate?: string | null;
+      status?: CapaStatus;
+      effectivenessResult?: string | null;
+    }): Promise<MutateOutcome> => {
+      const denied = guardWrite();
+      if (denied) return denied;
+      if (!stateRef.current.online) {
+        toast("CAPA changes need a live connection.", "warning");
+        return { ok: false, code: "OFFLINE" };
+      }
+      try {
+        const res = await api<unknown>("/api/capas", {
+          method: "POST",
+          body: {
+            sourceType: input.sourceType,
+            sourceId: input.sourceId || undefined,
+            projectId: input.projectId || undefined,
+            issue: input.issue,
+            rootCause: input.rootCause || undefined,
+            immediateCorrection: input.immediateCorrection || undefined,
+            correctiveAction: input.correctiveAction || undefined,
+            preventiveAction: input.preventiveAction || undefined,
+            ownerId: input.ownerId,
+            verifierId: input.verifierId || undefined,
+            dueDate: input.dueDate || undefined,
+            status: input.status || undefined,
+            effectivenessResult: input.effectivenessResult || undefined,
+          },
+        });
+        if (looksLikeEntity(res)) setCapa(res as unknown as Capa);
+        return { ok: true };
+      } catch (e) {
+        if (e instanceof ApiError) {
+          return { ok: false, code: e.code, message: e.message };
+        }
+        toast("Network error — CAPA not created.", "error");
+        return { ok: false, code: "NETWORK" };
+      }
+    },
+    [guardWrite, toast, setCapa],
+  );
+
+  const updateCapa = useCallback(
+    async (id: string, fields: Partial<Capa>): Promise<MutateOutcome> => {
+      const denied = guardWrite();
+      if (denied) return denied;
+      if (!stateRef.current.online) {
+        toast("CAPA changes need a live connection.", "warning");
+        return { ok: false, code: "OFFLINE" };
+      }
+      const current = stateRef.current.capas.find((c) => c.id === id);
+      if (!current) return { ok: false, code: "NOT_FOUND" };
+      try {
+        const res = await api<unknown>(`/api/capas/${id}`, {
+          method: "PATCH",
+          body: { ...fields, version: current.version ?? 1 },
+        });
+        if (looksLikeEntity(res)) {
+          setCapa(res as unknown as Capa);
+        } else {
+          setCapa({ ...current, ...fields, version: (current.version ?? 1) + 1 });
+        }
+        return { ok: true };
+      } catch (e) {
+        if (e instanceof ApiError) {
+          if (e.status === 409) {
+            if (looksLikeEntity(e.serverState)) setCapa(e.serverState as unknown as Capa);
+            toast("Someone else updated this CAPA first — refreshed to the latest version.", "warning");
+            return { ok: false, code: e.code };
+          }
+          return { ok: false, code: e.code, message: e.message };
+        }
+        toast("Network error — CAPA not updated.", "error");
+        return { ok: false, code: "NETWORK" };
+      }
+    },
+    [guardWrite, toast, setCapa],
+  );
+
+  const convertRoadblockToCapa = useCallback(
+    async (roadblockId: string): Promise<MutateOutcome> => {
+      const denied = guardWrite();
+      if (denied) return denied;
+      if (!stateRef.current.online) {
+        toast("Converting to a CAPA needs a live connection.", "warning");
+        return { ok: false, code: "OFFLINE" };
+      }
+      try {
+        const res = await api<unknown>(`/api/roadblocks/${roadblockId}/capa`, { method: "POST" });
+        if (looksLikeEntity(res)) setCapa(res as unknown as Capa);
+        toast("CAPA created from this roadblock.", "success");
+        return { ok: true };
+      } catch (e) {
+        if (e instanceof ApiError) {
+          toast(e.message || `Conversion rejected (${e.code}).`, "error");
+          return { ok: false, code: e.code, message: e.message };
+        }
+        toast("Network error — CAPA not created.", "error");
+        return { ok: false, code: "NETWORK" };
+      }
+    },
+    [guardWrite, toast, setCapa],
   );
 
   const decideApproval = useCallback(
@@ -1411,7 +1851,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const online = typeof navigator !== "undefined" ? navigator.onLine : true;
       // One-shot migration of pre-v6 local state (seq-less outbox rows, legacy conflicts).
       await migrateSyncState();
-      const [users, projects, tasks, roadblocks, approvals, milestones, workstreams, dependencies, updates, blocked, queuedOps, cachedUser, refreshedAt] =
+      const [users, projects, tasks, roadblocks, approvals, milestones, workstreams, dependencies, updates, actions, risks, capas, blocked, queuedOps, cachedUser, refreshedAt] =
         await Promise.all([
           idb.getAll<User>("users"),
           idb.getAll<Project>("projects"),
@@ -1422,6 +1862,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           idb.getAll<Workstream>("workstreams"),
           idb.getAll<TaskDependency>("dependencies"),
           idb.getAll<ProjectUpdate>("updates"),
+          idb.getAll<Action>("actions"),
+          idb.getAll<Risk>("risks"),
+          idb.getAll<Capa>("capas"),
           getBlockedOps(),
           getQueuedOps(),
           idb.getMeta<User>("currentUser"),
@@ -1443,6 +1886,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         workstreams,
         dependencies,
         updates,
+        actions,
+        risks,
+        capas,
         blocked,
         queuedOps,
         outboxCount: queuedOps.length,
@@ -1537,6 +1983,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       moveTask,
       updateRoadblock,
       createRoadblock,
+      escalateRoadblock,
+      createAction,
+      updateAction,
+      createRisk,
+      updateRisk,
+      createCapa,
+      updateCapa,
+      convertRoadblockToCapa,
       decideApproval,
       resolveBlockedMerge,
       retryBlocked,
@@ -1571,6 +2025,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       moveTask,
       updateRoadblock,
       createRoadblock,
+      escalateRoadblock,
+      createAction,
+      updateAction,
+      createRisk,
+      updateRisk,
+      createCapa,
+      updateCapa,
+      convertRoadblockToCapa,
       decideApproval,
       resolveBlockedMerge,
       retryBlocked,

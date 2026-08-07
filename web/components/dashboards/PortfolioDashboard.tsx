@@ -3,6 +3,7 @@
 // EA / Data / BizApps — portfolio list with strategic & CGEIT tags visible.
 
 import { useApp } from "@/lib/store";
+import { MyActions } from "@/components/Actions";
 import ProjectCard from "@/components/ProjectCard";
 import EmptyState from "@/components/EmptyState";
 import NewProjectButton from "@/components/NewProjectButton";
@@ -34,6 +35,8 @@ export default function PortfolioDashboard() {
         subtitle={`${meta.label} view · strategic and CGEIT tags shown on every project.`}
         action={<NewProjectButton />}
       />
+
+      <MyActions />
 
       {mine.length > 0 && (
         <section className="mb-10">

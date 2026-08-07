@@ -20,8 +20,10 @@ import { forbidden, notFound, validation, versionConflict } from '../errors.js';
 import { assertCanAdvance, assertLifecycleChange, LIFECYCLE_STAGES } from './gates.js';
 import { applyUpdate } from './occ.js';
 import {
-  CLASSIFICATIONS, canManageProjectWork, canReadProject, canSetClassification,
-  canWriteMilestone, canWriteRoadblock, canWriteTask, canWriteWorkstream,
+  CLASSIFICATIONS, canManageProjectWork, canReadAction, canReadCapa,
+  canReadProject, canSetClassification, canWrite, canWriteAction, canWriteCapa,
+  canWriteMilestone, canWriteRisk, canWriteRoadblock, canWriteTask,
+  canWriteWorkstream, isAdmin,
 } from './policy.js';
 import { ensureSecurityRouting } from './securityRouting.js';
 import { nowIso } from './time.js';
@@ -35,6 +37,32 @@ export const MILESTONE_TYPES = [
 export const MILESTONE_STATUSES = ['NOT_STARTED', 'IN_PROGRESS', 'DONE', 'SLIPPED', 'CANCELLED'];
 
 export const WORKSTREAM_STATUSES = ['NOT_STARTED', 'IN_PROGRESS', 'DONE', 'ON_HOLD'];
+
+/**
+ * E11 roadblock lifecycle (plan §27) — ORDERED. Transitions are forward-only
+ * along this sequence (skips allowed — e.g. RAISED -> RESOLVED for a quickly
+ * fixed obstacle); the ONE backward move is the explicit REOPEN:
+ * {status: 'RAISED', reopenReason (>=10 chars)} from RESOLVED/VERIFIED.
+ */
+export const ROADBLOCK_STATUSES = ['RAISED', 'ASSIGNED', 'IN_PROGRESS', 'RESOLVED', 'VERIFIED'];
+// (The shared "is this roadblock still open" predicate `isOpenRoadblock`
+// lives in services/rag.js — pure, imported by the gate engine and the deck.)
+
+/** E09 actions (plan §19). CANCELLED never counts as completed ANYWHERE:
+ * only DONE is completion; CANCELLED actions are simply out of play (they are
+ * not "open" for RAG/deck counting and never count towards done work). */
+export const ACTION_STATUSES = ['OPEN', 'DONE', 'CANCELLED'];
+export const ACTION_PRIORITIES = ['low', 'normal', 'high'];
+export const ACTION_SOURCE_TYPES = ['MANUAL', 'ROADBLOCK', 'CAPA'];
+
+/** E11 risks (plan §28). */
+export const RISK_CATEGORIES = ['technical', 'schedule', 'resource', 'security', 'financial', 'external', 'other'];
+export const RISK_STATUSES = ['OPEN', 'MITIGATING', 'CLOSED'];
+
+/** §29 CAPA lifecycle — ORDERED, forward-only, NO skips (each step is a
+ * deliberate quality-process stage). No reopen path exists yet (E19+ scope). */
+export const CAPA_STATUSES = ['OPEN', 'ANALYSIS', 'ACTION_PLANNED', 'IMPLEMENTATION', 'VERIFICATION', 'CLOSED'];
+export const CAPA_SOURCE_TYPES = ['ROADBLOCK', 'RISK', 'AUDIT', 'INCIDENT', 'REVIEW', 'MANUAL'];
 
 export const ENTITY_DEFS = {
   project: {
@@ -169,17 +197,131 @@ export const ENTITY_DEFS = {
     required: ['projectId', 'description'],
     parentRef: 'projectId',
     actorDefaults: { reportedBy: 'id' },
-    writable: ['projectId', 'taskId', 'description', 'severity', 'status', 'reportedBy'],
+    // E11 lifecycle fields. `escalated`/`escalatedAt` are server-managed via
+    // POST /api/roadblocks/:id/escalate only — deliberately NOT writable
+    // (PATCH/sync silently ignore them, like project.ragOverride).
+    writable: [
+      'projectId', 'taskId', 'description', 'severity', 'status', 'reportedBy',
+      'ownerId', 'dueDate', 'impact', 'resolutionApproach', 'resolutionNote', 'reopenReason',
+    ],
     defaults: () => ({
       taskId: null,
       severity: 'medium',
-      status: 'open',
+      status: 'RAISED',
       reportedBy: null,
+      ownerId: null,
+      dueDate: null,
+      impact: null,
+      resolutionApproach: null,
+      resolutionNote: null,
+      escalated: false,
+      escalatedAt: null,
+      reopenReason: null,
     }),
     enums: {
       severity: ['low', 'medium', 'high', 'critical'],
-      status: ['open', 'mitigating', 'resolved'],
+      status: ROADBLOCK_STATUSES,
     },
+    dateFields: ['dueDate'],
+    userRefs: ['ownerId'],
+  },
+  action: {
+    // E09 — lightweight accountability item (plan §19). projectId is OPTIONAL:
+    // null = a GENERAL (non-project) action, visible only to owner/creator/ADMIN.
+    required: ['title', 'ownerId'],
+    parentRef: 'projectId',
+    parentOptional: true,
+    // createdBy is NOT writable: the server always attributes the creator
+    // (actorDefaults fills it after pickWritable strips any client value).
+    actorDefaults: { createdBy: 'id' },
+    writable: [
+      'projectId', 'title', 'ownerId', 'dueDate', 'priority', 'status',
+      'sourceType', 'roadblockId', 'capaId',
+    ],
+    defaults: () => ({
+      projectId: null,
+      dueDate: null,
+      priority: 'normal',
+      status: 'OPEN',
+      sourceType: 'MANUAL',
+      roadblockId: null,
+      capaId: null,
+      createdBy: null,
+    }),
+    enums: {
+      priority: ACTION_PRIORITIES,
+      status: ACTION_STATUSES,
+      sourceType: ACTION_SOURCE_TYPES,
+    },
+    dateFields: ['dueDate'],
+    userRefs: ['ownerId'],
+  },
+  risk: {
+    // E11 — risks (plan §28). inherentScore/residualScore are DERIVED
+    // (probability*impact) — never writable; the service recomputes them on
+    // every create/patch/sync write (DB trigger backstop keeps Pg identical).
+    required: ['projectId', 'description', 'probability', 'impact'],
+    parentRef: 'projectId',
+    writable: [
+      'projectId', 'description', 'category', 'probability', 'impact',
+      'treatment', 'ownerId', 'targetDate', 'residualProbability',
+      'residualImpact', 'status',
+    ],
+    defaults: () => ({
+      category: 'other',
+      treatment: null,
+      ownerId: null,
+      targetDate: null,
+      residualProbability: null,
+      residualImpact: null,
+      status: 'OPEN',
+      inherentScore: null, // overwritten by applyRiskScores before insert
+      residualScore: null,
+    }),
+    enums: {
+      category: RISK_CATEGORIES,
+      status: RISK_STATUSES,
+    },
+    dateFields: ['targetDate'],
+    userRefs: ['ownerId'],
+    // 1..5 scales (400 outside the bounds; residuals may be null).
+    intRangeFields: {
+      probability: [1, 5], impact: [1, 5],
+      residualProbability: [1, 5], residualImpact: [1, 5],
+    },
+  },
+  capa: {
+    // §29 — Corrective and Preventive Action. projectId optional (audit /
+    // incident CAPAs can be org-level); verifiedAt is server-managed (set on
+    // the transition to CLOSED) — not writable.
+    required: ['issue', 'ownerId'],
+    parentRef: 'projectId',
+    parentOptional: true,
+    writable: [
+      'projectId', 'sourceType', 'sourceId', 'issue', 'rootCause',
+      'immediateCorrection', 'correctiveAction', 'preventiveAction',
+      'ownerId', 'verifierId', 'dueDate', 'status', 'effectivenessResult',
+    ],
+    defaults: () => ({
+      projectId: null,
+      sourceType: 'MANUAL',
+      sourceId: null,
+      rootCause: null,
+      immediateCorrection: null,
+      correctiveAction: null,
+      preventiveAction: null,
+      verifierId: null,
+      dueDate: null,
+      status: 'OPEN',
+      effectivenessResult: null,
+      verifiedAt: null,
+    }),
+    enums: {
+      sourceType: CAPA_SOURCE_TYPES,
+      status: CAPA_STATUSES,
+    },
+    dateFields: ['dueDate'],
+    userRefs: ['ownerId', 'verifierId'],
   },
 };
 
@@ -217,6 +359,15 @@ export function assertFieldRules(def, fields) {
     if (v === undefined) continue;
     if (!Number.isInteger(v) || v < min) {
       throw validation(`${key} must be an integer >= ${min}`, { field: key });
+    }
+  }
+  // def.intRangeFields {field: [min, max]} -> null or integer within bounds
+  // (risk probability/impact scales, plan §28).
+  for (const [key, [min, max]] of Object.entries(def.intRangeFields ?? {})) {
+    const v = fields[key];
+    if (v === undefined || v === null) continue;
+    if (!Number.isInteger(v) || v < min || v > max) {
+      throw validation(`${key} must be an integer between ${min} and ${max}`, { field: key });
     }
   }
   for (const [key, min] of Object.entries(def.numberFields ?? {})) {
@@ -323,11 +474,47 @@ export async function assertProjectRefs(repo, fields) {
 }
 
 /**
- * Operational write policy (E04) shared by PATCH and sync updates.
- * `current` is null for creates. Throws 403 FORBIDDEN — callers must have
- * already passed the concealment (read) check, so existence is known.
+ * Operational write policy (E04, extended by E09/E11) shared by PATCH and
+ * sync updates. `current` is null for creates. `fields` is only consulted for
+ * creates of kinds whose create policy depends on the payload (capa
+ * self-owned). Throws 403 FORBIDDEN — callers must have already passed the
+ * concealment (read) check, so existence is known.
  */
-export function assertOperationalWrite(actor, kind, current, project, members) {
+export function assertOperationalWrite(actor, kind, current, project, members, fields = {}) {
+  if (kind === 'action') {
+    // Create (project-linked): task-like involvement — manage level, project
+    // owner/sponsor, or contributing member. Updates: owner/creator/ADMIN or
+    // (project-linked) manage level.
+    const ok = current == null
+      ? canWriteTask(actor, project, null, members)
+      : canWriteAction(actor, project, current, members);
+    if (!ok) {
+      throw forbidden(current == null
+        ? 'Creating a project-linked action requires project management authority, membership, or ownership'
+        : 'Action updates require being its owner or creator, project management authority, or ADMIN');
+    }
+    return;
+  }
+  if (kind === 'risk') {
+    if (!canWriteRisk(actor, project, current, members)) {
+      throw forbidden('Risk writes require project management authority, membership, ownership, or being the risk owner');
+    }
+    return;
+  }
+  if (kind === 'capa') {
+    // Create (project-linked): manage level OR self-owned (the CAPA process
+    // lets any involved reader raise one against themselves; assigning others
+    // needs authority). Updates: owner/verifier/manage/ADMIN.
+    const ok = current == null
+      ? (canManageProjectWork(actor, project, members) || (canWrite(actor) && fields.ownerId === actor?.id))
+      : canWriteCapa(actor, project, current, members);
+    if (!ok) {
+      throw forbidden(current == null
+        ? 'Creating a project-linked CAPA requires project management authority (or creating it self-owned)'
+        : 'CAPA updates require being its owner or verifier, project management authority, or ADMIN');
+    }
+    return;
+  }
   if (kind === 'project') {
     if (!canManageProjectWork(actor, project, members)) {
       throw forbidden('Project updates require ADMIN, the project PM, or a DIVISION_LEAD of its division');
@@ -374,9 +561,142 @@ export async function assertTaskWorkstream(repo, projectId, fields) {
   }
 }
 
+// ---- E09/E11 lifecycle + derived-field rules --------------------------------
+
+const RB_RANK = Object.fromEntries(ROADBLOCK_STATUSES.map((s, i) => [s, i]));
+const CAPA_RANK = Object.fromEntries(CAPA_STATUSES.map((s, i) => [s, i]));
+
 /**
- * Create a project/task/roadblock. Fills defaults, validates, writes, runs
- * security routing, and returns the created entity.
+ * E11 roadblock lifecycle (plan §27), shared by create, PATCH and sync:
+ *   - assignment (setting ownerId) while RAISED with no explicit status in the
+ *     payload implicitly moves the roadblock to ASSIGNED;
+ *   - status moves are FORWARD-ONLY along RAISED->ASSIGNED->IN_PROGRESS->
+ *     RESOLVED->VERIFIED (skips allowed);
+ *   - the ONE backward move is the explicit REOPEN: {status:'RAISED',
+ *     reopenReason (>=10 chars after trim)} from RESOLVED/VERIFIED;
+ *   - RESOLVED requires a resolutionNote (in the payload or already set);
+ *   - VERIFIED requires the actor to hold manage-level authority on the
+ *     project OR be the roadblock's reporter (independent verification);
+ *   - a RESOLVED/VERIFIED roadblock cannot be escalated unless reopened first
+ *     (enforced by the escalate endpoint, which shares isOpenRoadblock).
+ * `current` is null for creates (the base state is then RAISED).
+ * Mutates `fields` only for the implicit RAISED->ASSIGNED move.
+ */
+export async function assertRoadblockLifecycle(repo, actor, current, fields) {
+  const from = current?.status ?? 'RAISED';
+
+  // Implicit assignment: ownerId set while RAISED and no explicit status.
+  if (fields.status === undefined && fields.ownerId != null && from === 'RAISED') {
+    fields.status = 'ASSIGNED';
+  }
+
+  const to = fields.status;
+  if (to === undefined || to === from) return;
+
+  const reopen = to === 'RAISED' && (from === 'RESOLVED' || from === 'VERIFIED');
+  if (reopen) {
+    const reason = fields.reopenReason;
+    if (typeof reason !== 'string' || reason.trim().length < 10) {
+      throw validation('Reopening a RESOLVED/VERIFIED roadblock requires a reopenReason of at least 10 characters', {
+        field: 'reopenReason',
+      });
+    }
+  } else if (RB_RANK[to] <= RB_RANK[from]) {
+    throw validation(`Roadblock status can only move forward (${ROADBLOCK_STATUSES.join(' -> ')}); ${from} -> ${to} is not allowed (reopen with a reopenReason to go back to RAISED)`, {
+      field: 'status', from, to,
+    });
+  }
+
+  if (to === 'RESOLVED' && !(fields.resolutionNote ?? current?.resolutionNote)) {
+    throw validation('resolutionNote is required when moving a roadblock to RESOLVED', {
+      field: 'resolutionNote',
+    });
+  }
+
+  if (to === 'VERIFIED') {
+    const projectId = current?.projectId ?? fields.projectId;
+    const project = await repo.get('project', projectId);
+    const members = project ? await repo.listProjectMembers(project.id) : [];
+    const reporter = (current?.reportedBy ?? fields.reportedBy) === actor?.id;
+    if (!canManageProjectWork(actor, project, members) && !reporter) {
+      throw forbidden('Verifying a roadblock requires project management authority or being its reporter');
+    }
+  }
+}
+
+/**
+ * §29 CAPA transitions, shared by create/PATCH: forward-only, NO skips
+ * (exactly one stage at a time); VERIFICATION requires correctiveAction AND
+ * preventiveAction; CLOSED requires verifierId AND effectivenessResult.
+ * The server stamps verifiedAt on the transition to CLOSED (never writable).
+ * `current` is null for creates (base state OPEN — a create may therefore
+ * land at most at ANALYSIS). Mutates `fields` for the verifiedAt stamp.
+ */
+export function assertCapaTransition(current, fields) {
+  const from = current?.status ?? 'OPEN';
+  const to = fields.status;
+  if (to === undefined || to === from) return;
+
+  if (CAPA_RANK[to] !== CAPA_RANK[from] + 1) {
+    throw validation(`CAPA status moves exactly one stage forward (${CAPA_STATUSES.join(' -> ')}); ${from} -> ${to} is not allowed`, {
+      field: 'status', from, to,
+    });
+  }
+  if (to === 'VERIFICATION') {
+    if (!(fields.correctiveAction ?? current?.correctiveAction)
+        || !(fields.preventiveAction ?? current?.preventiveAction)) {
+      throw validation('Moving a CAPA to VERIFICATION requires both correctiveAction and preventiveAction', {
+        field: 'status',
+      });
+    }
+  }
+  if (to === 'CLOSED') {
+    if (!(fields.verifierId ?? current?.verifierId)
+        || !(fields.effectivenessResult ?? current?.effectivenessResult)) {
+      throw validation('Closing a CAPA requires a verifierId and an effectivenessResult', {
+        field: 'status',
+      });
+    }
+    fields.verifiedAt = nowIso();
+  }
+}
+
+/**
+ * E11 risk derived scores (plan §28): inherentScore = probability*impact;
+ * residualScore = residualProbability*residualImpact when BOTH are set, else
+ * null. Never client-writable — recomputed on every write path and injected
+ * into `fields` (DB trigger backstop keeps Postgres identical).
+ */
+export function applyRiskScores(current, fields) {
+  if (current == null || fields.probability !== undefined || fields.impact !== undefined) {
+    const p = fields.probability ?? current?.probability;
+    const i = fields.impact ?? current?.impact;
+    if (p != null && i != null) fields.inherentScore = p * i;
+  }
+  if (current == null || fields.residualProbability !== undefined || fields.residualImpact !== undefined) {
+    const rp = fields.residualProbability !== undefined ? fields.residualProbability : current?.residualProbability;
+    const ri = fields.residualImpact !== undefined ? fields.residualImpact : current?.residualImpact;
+    fields.residualScore = rp != null && ri != null ? rp * ri : null;
+  }
+}
+
+/**
+ * E09: an action's roadblockId/capaId must reference existing rows (400).
+ * The linkage is informational (source traceability), so no cross-project
+ * constraint is imposed beyond existence.
+ */
+export async function assertActionRefs(repo, fields) {
+  if (fields.roadblockId != null && !(await repo.get('roadblock', fields.roadblockId))) {
+    throw validation(`Unknown roadblockId: ${fields.roadblockId}`, { field: 'roadblockId' });
+  }
+  if (fields.capaId != null && !(await repo.get('capa', fields.capaId))) {
+    throw validation(`Unknown capaId: ${fields.capaId}`, { field: 'capaId' });
+  }
+}
+
+/**
+ * Create a project/task/roadblock/action/risk/capa. Fills defaults,
+ * validates, writes, runs security routing, and returns the created entity.
  * options.id lets the sync processor honour client-generated UUIDs.
  */
 export async function createEntity(repo, actor, kind, payload, options = {}) {
@@ -394,7 +714,7 @@ export async function createEntity(repo, actor, kind, payload, options = {}) {
   assertFieldRules(def, fields);
   await assertUserRefs(repo, def, fields);
 
-  if (def.parentRef) {
+  if (def.parentRef && !(def.parentOptional && fields[def.parentRef] == null)) {
     const parent = await repo.get('project', fields[def.parentRef]);
     const members = parent ? await repo.listProjectMembers(parent.id) : [];
     // Concealment (ADR-005): a parent project the actor may not read yields
@@ -404,7 +724,7 @@ export async function createEntity(repo, actor, kind, payload, options = {}) {
     }
     // E04 write policy (create): null `current` — self-assignment does not
     // grant task creation; roadblock creation stays open (reporter grant).
-    assertOperationalWrite(actor, kind, null, parent, members);
+    assertOperationalWrite(actor, kind, null, parent, members, fields);
     // A non-manager may only report roadblocks as themselves.
     if (kind === 'roadblock' && fields.reportedBy !== undefined
         && fields.reportedBy !== actor?.id && !canManageProjectWork(actor, parent, members)) {
@@ -412,7 +732,21 @@ export async function createEntity(repo, actor, kind, payload, options = {}) {
     }
     // E07: a task's workstream must belong to the task's own project.
     if (kind === 'task') await assertTaskWorkstream(repo, parent.id, fields);
+  } else if ((kind === 'action' || kind === 'capa') && fields.projectId == null) {
+    // E09/§29 GENERAL (non-project) rows: any non-VIEWER may create one for
+    // THEMSELVES; assigning someone else without a project scope to police it
+    // requires ADMIN.
+    if (!canWrite(actor)) throw forbidden(`Creating a ${kind} requires an active non-VIEWER account`);
+    if (fields.ownerId !== actor?.id && !isAdmin(actor)) {
+      throw forbidden(`General (non-project) ${kind}s may only be created self-owned; assigning another owner requires ADMIN`);
+    }
   }
+
+  // E09/E11 per-kind create rules (base states: roadblock RAISED, capa OPEN).
+  if (kind === 'roadblock') await assertRoadblockLifecycle(repo, actor, null, fields);
+  if (kind === 'capa') assertCapaTransition(null, fields);
+  if (kind === 'risk') applyRiskScores(null, fields);
+  if (kind === 'action') await assertActionRefs(repo, fields);
 
   // Classification: only ADMIN may set it at create; anyone else gets the
   // forced default 'internal' (ADR-005).
@@ -467,10 +801,17 @@ export async function patchEntity(repo, actor, kind, id, body) {
   if (!current) throw notFound(`${kind} ${id} not found`);
 
   // Concealment (ADR-005): writes against entities of unreadable projects
-  // 404 exactly like a missing id.
+  // 404 exactly like a missing id. General (projectId null) actions/CAPAs are
+  // concealed from everyone but their owner/creator(/verifier) and ADMIN.
   const scopeProject = kind === 'project' ? current : await repo.get('project', current.projectId);
   const members = scopeProject ? await repo.listProjectMembers(scopeProject.id) : [];
   if (scopeProject && !canReadProject(actor, scopeProject, members)) {
+    throw notFound(`${kind} ${id} not found`);
+  }
+  if (kind === 'action' && !canReadAction(actor, current, scopeProject, members)) {
+    throw notFound(`${kind} ${id} not found`);
+  }
+  if (kind === 'capa' && !canReadCapa(actor, current, scopeProject, members)) {
     throw notFound(`${kind} ${id} not found`);
   }
 
@@ -515,6 +856,14 @@ export async function assertUpdateBusinessRules(repo, actor, kind, current, fiel
   await assertUserRefs(repo, def, fields);
   // E07: a task may only be attached to a workstream of its own project.
   if (kind === 'task') await assertTaskWorkstream(repo, current.projectId, fields);
+  // E11 roadblock lifecycle + §29 CAPA transitions + E11 derived risk scores
+  // + E09 action link refs — identical for direct PATCH and offline sync
+  // (sync violations surface as `blocked` with the typed error, halting the
+  // batch per invariant 19).
+  if (kind === 'roadblock') await assertRoadblockLifecycle(repo, actor, current, fields);
+  if (kind === 'capa') assertCapaTransition(current, fields);
+  if (kind === 'risk') applyRiskScores(current, fields);
+  if (kind === 'action') await assertActionRefs(repo, fields);
   if (kind !== 'project') return;
 
   // Only ADMIN may change a project's classification (403 otherwise).

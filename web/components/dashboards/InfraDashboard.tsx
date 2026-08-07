@@ -6,6 +6,7 @@
 import Link from "next/link";
 import { useMemo } from "react";
 import { useApp } from "@/lib/store";
+import { MyActions } from "@/components/Actions";
 import TaskCard from "@/components/TaskCard";
 import EmptyState from "@/components/EmptyState";
 import NewProjectButton from "@/components/NewProjectButton";
@@ -49,6 +50,8 @@ export default function InfraDashboard() {
         subtitle={`${locked.length} locked behind prerequisites · ${ready.length} ready to progress`}
         action={<NewProjectButton />}
       />
+
+      <MyActions />
 
       <section className="mb-10">
         <SectionHeader className="flex items-center gap-2">

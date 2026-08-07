@@ -3,6 +3,7 @@
 // InfoSec — pending approvals queue first, then gated projects.
 
 import { useApp } from "@/lib/store";
+import { MyActions } from "@/components/Actions";
 import ApprovalsQueue from "@/components/ApprovalsQueue";
 import NewProjectButton from "@/components/NewProjectButton";
 import ProjectCard from "@/components/ProjectCard";
@@ -20,6 +21,8 @@ export default function InfosecDashboard() {
         subtitle="Network-altering work routes here for approval before it can progress."
         action={<NewProjectButton />}
       />
+
+      <MyActions />
 
       <ApprovalsQueue canDecide={canDecide} />
 

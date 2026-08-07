@@ -147,11 +147,17 @@ function seedFixtures() {
 
   const roadblocks = [
     {
+      // E11 lifecycle enum migration (ADR-007): the seed row's old status
+      // 'open' maps to 'RAISED' (open->RAISED, mitigating->IN_PROGRESS,
+      // resolved->RESOLVED). Keep in sync with db/init/02_seed.sql.
       id: '30000000-0000-0000-0000-000000000001',
       projectId: '10000000-0000-0000-0000-000000000001',
       taskId: '20000000-0000-0000-0000-000000000001',
       description: 'Cooling unit delivery delayed at customs',
-      severity: 'high', status: 'open', reportedBy: u(1),
+      severity: 'high', status: 'RAISED', reportedBy: u(1),
+      ownerId: null, dueDate: null, impact: null,
+      resolutionApproach: null, resolutionNote: null,
+      escalated: false, escalatedAt: null, reopenReason: null,
       version: 1, updatedAt: t0, createdAt: t0,
     },
   ];
@@ -211,6 +217,11 @@ export class MemoryRepo {
       // this kind (no PATCH/DELETE routes exist; trg_project_updates_append_only
       // is the Postgres backstop).
       projectUpdate: seed.updates,
+      // E09/E11: actions ride offline sync; risks + capas are online-only
+      // (ADR-007). No seed rows — mirror db/init/02_seed.sql.
+      action: [],
+      risk: [],
+      capa: [],
     };
     // E10 RAG snapshots (plan §133) — derived trend history, append-only and
     // deliberately NOT audited (like the approval ledger, it IS a record).
