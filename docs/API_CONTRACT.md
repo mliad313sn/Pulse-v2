@@ -1,4 +1,4 @@
-# OpsPM360 — API Contract (v4 — gate engine G0–G5, approval ledger, milestones, computed progress)
+# OpsPM360 — API Contract (v5 — workstreams, typed task dependencies, critical path)
 
 Shared contract between `server/` (Node.js/Express) and `web/` (Next.js PWA).
 Both sides MUST conform to this document. Base URL: `http://localhost:4000/api`.
@@ -228,6 +228,80 @@ default 1), version, updatedAt, createdAt.
 Milestones ride the offline sync protocol (`entity: "milestone"`) with the
 same write policy, and appear in `GET /api/bootstrap` (concealment-filtered).
 
+## Workstreams (E07 core, plan §17)
+
+`Workstream`: {id, projectId, title, description?, leadId?, startDate?,
+endDate? (ISO dates `YYYY-MM-DD`), status
+(`NOT_STARTED|IN_PROGRESS|DONE|ON_HOLD`, default `NOT_STARTED`), version,
+updatedAt, createdAt}.
+
+| Endpoint | Behavior |
+|---|---|
+| `GET /api/projects/:id/workstreams` | project's workstreams (concealed → 404) |
+| `GET /api/workstreams` (`?projectId=`) | classification + enterprise-access filtered |
+| `POST /api/workstreams` | create — **manage-level authority** (ADMIN/PM/division lead); unknown projectId/leadId, bad enum/date → 400 |
+| `PATCH /api/workstreams/:id` | manage-level **OR the workstream lead**; OCC `version` required (400/409); concealed project → uniform 404 |
+
+Workstreams ride the offline sync protocol (`entity: "workstream"`) with the
+same write policy, and appear in `GET /api/bootstrap` as `workstreams`
+(concealment-filtered).
+
+## Task scheduling fields (E07, plan §18)
+
+`Task` gains (all nullable, writable per the task write policy):
+- **workstreamId?** — must reference a workstream of the task's OWN project,
+  else `400 VALIDATION {field: "workstreamId"}` (a workstream of another
+  project is indistinguishable from an unknown id);
+- **plannedStart?**, **plannedFinish?** — ISO dates `YYYY-MM-DD` (Gantt /
+  critical path inputs);
+- **estimatedHours?** — number ≥ 0.
+
+## Task dependencies & cycle prevention (E07, plan §20)
+
+`TaskDependency`: {id, projectId, predecessorId, successorId, type
+(`FS|SS|FF|SF`, default `FS`), lagDays (integer, default 0 — negative = lead),
+createdAt}. Rows are **immutable** (create/delete only, no OCC version;
+change = delete + re-create, both audited).
+
+| Endpoint | Behavior |
+|---|---|
+| `GET /api/projects/:id/dependencies` | project's edges (concealed → 404) |
+| `GET /api/dependencies` (`?projectId=`) | classification + enterprise-access filtered |
+| `POST /api/dependencies` `{predecessorId, successorId, type?, lagDays?}` | `201` — **manage-level authority**; both tasks must exist and share the SAME project (400; tasks of unreadable projects behave like unknown ids); self-dependency → 400; duplicate `(predecessorId, successorId, type)` → **409 `DUPLICATE`**; an edge that would close a **dependency cycle** (transitively, across ALL types) → `400 VALIDATION` "dependency cycle" with `detail.path` (service DFS; recursive DB trigger backstop) |
+| `DELETE /api/dependencies/:id` | `204` — manage-level authority; missing/concealed → 404 |
+
+**Locking semantics** (back-compat with v1):
+- `tasks.dependencyLock` keeps working — it is the v1 single-prereq lock.
+- **FS** edges additionally lock: a task with any FS predecessor not `done`
+  has derived `locked: true` and advancing it (→ in_progress/done) → `423
+  DEPENDENCY_LOCKED` whose `detail.blockingPredecessorIds` lists ALL blocking
+  predecessor ids (dependencyLock + unfinished FS predecessors; the v1
+  `prerequisiteTaskId`/`prerequisiteStatus` fields remain when the
+  dependencyLock itself blocks).
+- **SS/FF/SF never lock** — they are scheduling semantics only (critical
+  path / Gantt).
+- Deleting the FS edge (or completing the predecessor) unlocks the successor.
+
+## Schedule / critical path (E07, plan §20/§184)
+
+`GET /api/projects/:id/schedule` → any reader (concealed → 404):
+
+```json
+{ "tasks": [ { "taskId": "...", "earliestStart": "2026-01-05",
+               "earliestFinish": "2026-01-09", "latestStart": "2026-01-05",
+               "latestFinish": "2026-01-09", "slackDays": 0, "critical": true } ],
+  "criticalPath": ["taskId", "..."] }
+```
+
+Pure CPM forward/backward pass (`services/schedule.js`) over the project's
+tasks + typed dependencies. Rules: calendar days, UTC, inclusive dates;
+duration = plannedFinish − plannedStart + 1 when both set, else **1 day**;
+anchor (day 0) = earliest plannedStart (today if none); plannedStart is a
+start-no-earlier-than floor; FS: succ starts after pred finish (+lag), SS:
+after pred start (+lag), FF/SF constrain finishes. `slackDays = latestStart −
+earliestStart`; `critical` ⇔ slack 0; `criticalPath` lists critical tasks in
+earliestStart order.
+
 ## Computed progress (E08, plan §23 — invariant 15)
 
 Projects carry a derived, **never-writable** wire field:
@@ -260,12 +334,13 @@ project read (list, detail, bootstrap, deck data).
 | 403  | `FORBIDDEN`          | role/privilege not allowed (incl. every VIEWER write)       |
 | 404  | `NOT_FOUND`          | entity missing OR concealed by classification               |
 | 409  | `VERSION_CONFLICT`   | OCC mismatch on direct (online) update                      |
-| 423  | `DEPENDENCY_LOCKED`  | task advance blocked by incomplete prerequisite             |
+| 409  | `DUPLICATE`          | identical dependency edge (predecessor, successor, type) already exists |
+| 423  | `DEPENDENCY_LOCKED`  | task advance blocked by incomplete prerequisite (`dependencyLock` or FS predecessor; `detail.blockingPredecessorIds`) |
 | 423  | `SECURITY_GATE`      | task advance blocked by pending InfoSec approval            |
 | 422  | `GATE_REQUIREMENTS_NOT_MET` | gate request while requirements unmet (`detail.missing[]`) |
 | 403  | `STEERING_APPROVAL_REQUIRED` | G2 decision without the `steering` privilege (even ADMIN) |
 | 409  | `GATE_REQUEST_PENDING` | a gate request is already pending (`detail.pendingRequestId`) |
-| 400  | `VALIDATION`         | bad payload (incl. immutable `code`, VIEWER-as-PM, unknown refs, direct `lifecycleStage` writes, missing cancel/hold reason) |
+| 400  | `VALIDATION`         | bad payload (incl. immutable `code`, VIEWER-as-PM, unknown refs, direct `lifecycleStage` writes, missing cancel/hold reason, cross-project workstream/dependency, self-dependency, dependency cycle) |
 
 ## Entities (JSON, camelCase over the wire)
 `Project`: id, **code** (PRJ-YYYY-NNN, immutable), name, description,
@@ -284,11 +359,15 @@ writable per manage-level policy; unknown supportOwnerId → 400),
 **progress** (derived — see Computed progress; never writable),
 version, updatedAt, createdAt.
 
-`Task`: id, projectId, title, description, division, site, assigneeId,
+`Task`: id, projectId, **workstreamId?** (same-project workstream — 400
+otherwise), title, description, division, site, assigneeId,
 status (`todo|in_progress|blocked|done`), priority (`low|normal|high|critical`),
-dependencyLock (taskId|null), riskTags[], slaDueAt, version, updatedAt, createdAt.
-Server adds derived field **`locked: boolean`** (prerequisite not done OR project
-security gate pending).
+dependencyLock (taskId|null), **plannedStart?**, **plannedFinish?** (ISO dates),
+**estimatedHours?** (number ≥ 0), riskTags[], slaDueAt, version, updatedAt,
+createdAt. Server adds derived field **`locked: boolean`** (dependencyLock
+prerequisite or any FS predecessor not done, OR project security gate pending).
+
+`Workstream` / `TaskDependency`: see Workstreams and Task dependencies (E07).
 
 `Roadblock`: id, projectId, taskId, description, severity
 (`low|medium|high|critical`), status (`open|mitigating|resolved`), reportedBy,
@@ -300,13 +379,16 @@ version, updatedAt, createdAt.
 ## Endpoints (business — all require a session; classification filter applies to every read)
 | Method & path | Notes |
 |---|---|
-| `GET /api/bootstrap` | `{ user, projects, tasks, roadblocks, approvals, milestones, pillars, portfolios, programs, serverTime }` — everything the client caches into IndexedDB (concealed projects and their children excluded; projects carry `pmId` + `progress`) |
+| `GET /api/bootstrap` | `{ user, projects, tasks, roadblocks, approvals, milestones, workstreams, dependencies, pillars, portfolios, programs, serverTime }` — everything the client caches into IndexedDB (concealed projects and their children excluded; projects carry `pmId` + `progress`) |
 | `GET /api/projects` / `GET /api/projects/:id` | classification + enterprise-access filtered; concealed → uniform 404; projects carry derived `pmId` |
 | `POST /api/projects` | create (ADMIN or DIVISION_LEAD); body = Project fields minus server-managed (`code` is generated); non-ADMIN classification forced `internal`; unknown portfolioId/programId/sponsorId/engagedDivisions/sites → 400 |
 | `PATCH /api/projects/:id` | body must include `version` (the base version); OCC applies; requires manage-level authority (ADMIN/PM/division lead — else 403); classification change ADMIN-only (403); `code` immutable (400); lifecycleStage gate-governed (400 VALIDATION except ADMIN one-step-backward); operatingStatus transition rules (see Project codes & lifecycle) |
 | `GET /api/projects/:id/tasks` · `GET /api/tasks` | tasks incl. derived `locked`; tasks of concealed projects hidden |
 | `GET /api/projects/:id/members` · `POST /api/projects/:id/members` · `DELETE /api/projects/:id/members/:userId/:role` | see Project membership endpoints |
 | `GET /api/projects/:id/milestones` · `GET/POST /api/milestones` · `PATCH /api/milestones/:id` | see Milestones (E08 core) |
+| `GET /api/projects/:id/workstreams` · `GET/POST /api/workstreams` · `PATCH /api/workstreams/:id` | see Workstreams (E07 core) |
+| `GET /api/projects/:id/dependencies` · `GET/POST /api/dependencies` · `DELETE /api/dependencies/:id` | see Task dependencies (E07) |
+| `GET /api/projects/:id/schedule` | see Schedule / critical path (E07) |
 | `GET /api/projects/:id/gates` · `POST /api/projects/:id/gates/request` · `GET /api/gate-requests` · `POST /api/gate-requests/:id/decision` | see Gate engine (E05) |
 | `GET /api/projects/:id/ledger` | see Approval ledger (immutable, read-only) |
 | `POST /api/tasks` | create — manage-level, contributing member, or project owner/sponsor (else 403; VIEWER always 403) |
@@ -326,7 +408,7 @@ Request:
 ```json
 { "clientId": "device-uuid", "operations": [ {
     "opId": "client-generated-uuid",
-    "entity": "task" | "project" | "roadblock" | "milestone",
+    "entity": "task" | "project" | "roadblock" | "milestone" | "workstream",
     "entityId": "uuid",
     "op": "update" | "create",
     "baseVersion": 3,
@@ -359,7 +441,9 @@ Response:
   projects/tasks/roadblocks; one-PM-per-project with no VIEWER leads;
   immutable project codes; gate-governed lifecycle transitions with
   `steering`-only G2 decisions and the immutable approval ledger;
-  manage-or-owner milestone writes; computed (never-writable) progress;
+  manage-or-owner milestone writes; manage-or-lead workstream writes;
+  manage-only dependency writes with acyclic-graph enforcement;
+  computed (never-writable) progress;
   `security_reviewer`-privilege approval decisions; classification AND
   enterprise-access concealment on every read path.
 - **Presentation-level defaulting** (not a wall): `ops`-division users get
@@ -369,7 +453,7 @@ Response:
 
 ## Governance invariants (enforced server-side AND in DB triggers)
 1. OCC: every direct PATCH must carry `version`; mismatch → 409 with `serverState`.
-2. A task with `dependencyLock` cannot move to `in_progress`/`done` until its prerequisite is `done` → 423 `DEPENDENCY_LOCKED`.
+2. A task with `dependencyLock` cannot move to `in_progress`/`done` until its prerequisite is `done` → 423 `DEPENDENCY_LOCKED`. Since E07 the same lock applies to **FS** dependency predecessors (SS/FF/SF never lock).
 3. A project whose `securityGateStatus === "pending"` blocks all its tasks from advancing → 423 `SECURITY_GATE`.
 4. Creating/updating a project or task with risk tag `network_alteration` (or `firewall_change`, `external_exposure`) auto-creates a pending `SecurityApproval` and flips the project gate to `pending` (DB trigger does this; server must re-read after write).
 5. Every mutation is audit-logged; audit rows are immutable.
@@ -381,3 +465,4 @@ Response:
 11. At most one PENDING gate request per project (partial unique index backstop).
 12. `operatingStatus` CANCELLED is terminal and requires `cancelReason`; ON_HOLD requires `holdReason`.
 13. Project `progress` is computed from milestone weights — no write path exists.
+14. The per-project task dependency graph is **acyclic** across all edge types (service DFS + recursive DB trigger); a task's `workstreamId` always references a workstream of its own project (service check + DB trigger).

@@ -1,6 +1,7 @@
 # Execution Status
 
-Updated: 2026-08-07 (Wave 1 complete; Wave 2 governance slice COMPLETE and verified)
+Updated: 2026-08-07 (Wave 1 complete; Wave 2 governance slice COMPLETE; Wave 3 E07-core
+server slice COMPLETE and verified)
 
 ## Where we are
 
@@ -55,8 +56,25 @@ immutable approval_ledger (DB trigger + push-only repos), direct lifecycleStage 
 decide/ledger/status), Edit Project dialog covering all gate-evidence fields, user directory
 opened read-only to all authenticated roles (people pickers) + users in bootstrap.
 
+## Completed slice 4: E07 core (server) — workstreams, typed dependencies, critical path — DONE
+Verified: 174/174 server tests (37 suites) · scratch-Postgres smoke (schema+seed apply;
+FS-gate / cycle / project-mismatch / unique / self-dep triggers all fire; PgRepo API
+round-trip incl. estimatedHours numeric + DATE round-trip) · live MemoryRepo curl smoke
+(workstream create -> FS dep w/ lag -> locked successor -> cycle 400 -> schedule/critical
+path -> bootstrap keys). Contract: docs/API_CONTRACT.md v5 + openapi 1.3.0.
+Delivered (server/db only — web Gantt view is the parallel frontend slice):
+workstreams entity (OCC, audit, sync, bootstrap; manage-or-lead writes; VIEWER 403);
+task fields workstreamId (same-project rule + DB trigger), plannedStart/plannedFinish,
+estimatedHours; task_dependencies table (FS/SS/FF/SF + lagDays, unique edge, self-dep
+CHECK, recursive cycle trigger) + POST/DELETE endpoints (manage-only, dup 409 DUPLICATE,
+cycle 400 via service DFS) + GET per project; FS predecessors extend gates.computeLocked/
+assertCanAdvance + DB trg_task_gates (423 detail.blockingPredecessorIds; SS/FF/SF are
+scheduling-only and never lock); services/schedule.js pure CPM forward/backward pass
+(documented duration/anchor/lag rules) + GET /api/projects/:id/schedule -> {tasks[],
+criticalPath[]}; generic repo.delete added to both repos (audited).
+
 ## Next slices (in order)
-1. E07 core: workstreams + typed task dependencies (FS first) + cycle prevention; Gantt read view.
+1. E07 web: Gantt read view (parallel frontend agent; server contract v5 is frozen).
 2. E10: computed RAG (4 signals, worst-wins, explanation) + freshness + manual override w/ reason.
 3. E25/E26 rework per ADR-003: strict conflicts (drop LWW), ordered halt-on-refusal offline queue.
 4. E09 Actions + E11 roadblock lifecycle upgrade (RAISED→…→VERIFIED) + risks + CAPA.

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: OpsPM360 API
-  version: "1.2.0"
+  version: "1.3.0"
   description: |
     Offline-first project portfolio management for multi-site mining IT operations.
     Auth: server-side sessions — POST /auth/login sets the HttpOnly `ppm_session`
@@ -19,6 +19,12 @@ info:
     requests + authorized decisions; G2 demands the steering privilege),
     immutable approval ledger, weighted milestones, and COMPUTED project
     progress (never writable).
+    E07: workstreams (manage-or-lead writes), typed task dependencies
+    (FS/SS/FF/SF + lagDays; acyclic per project — cycle-closing edges are
+    refused; FS locks the successor until the predecessor is done, SS/FF/SF
+    are scheduling-only), task scheduling fields (workstreamId,
+    plannedStart/plannedFinish, estimatedHours) and the CPM schedule /
+    critical-path endpoint.
 servers:
   - url: http://localhost:4000/api
 tags:
@@ -29,6 +35,8 @@ tags:
   - name: portfolios
   - name: projects
   - name: milestones
+  - name: workstreams
+  - name: dependencies
   - name: gates
   - name: tasks
   - name: roadblocks
@@ -653,6 +661,12 @@ paths:
                   milestones:
                     type: array
                     items: { $ref: "#/components/schemas/Milestone" }
+                  workstreams:
+                    type: array
+                    items: { $ref: "#/components/schemas/Workstream" }
+                  dependencies:
+                    type: array
+                    items: { $ref: "#/components/schemas/TaskDependency" }
                   pillars:
                     type: array
                     items: { $ref: "#/components/schemas/StrategicPillar" }
@@ -757,6 +771,55 @@ paths:
               schema:
                 type: array
                 items: { $ref: "#/components/schemas/Milestone" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/workstreams:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    get:
+      tags: [workstreams]
+      summary: Workstreams of a project (concealed projects 404)
+      responses:
+        "200":
+          description: Workstreams
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Workstream" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/dependencies:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    get:
+      tags: [dependencies]
+      summary: Typed task dependencies of a project (concealed projects 404)
+      responses:
+        "200":
+          description: Dependency edges
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/TaskDependency" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{id}/schedule:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    get:
+      tags: [dependencies]
+      summary: >
+        CPM schedule (forward/backward pass over tasks + typed dependencies).
+        Calendar days, inclusive dates; duration = plannedFinish - plannedStart + 1
+        (fallback 1 day); plannedStart is a start-no-earlier-than floor.
+      responses:
+        "200":
+          description: Per-task schedule + critical path (taskIds in earliestStart order)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Schedule" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /projects/{id}/gates:
@@ -880,6 +943,118 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/VersionConflict" }
+
+  /workstreams:
+    get:
+      tags: [workstreams]
+      summary: List workstreams (classification/enterprise-filtered; optional ?projectId=)
+      parameters:
+        - name: projectId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Workstreams
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Workstream" }
+    post:
+      tags: [workstreams]
+      summary: Create a workstream (manage-level authority on the project)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkstreamCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workstream" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /workstreams/{id}:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    patch:
+      tags: [workstreams]
+      summary: Update a workstream (manage-level OR the workstream lead; OCC `version` required)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkstreamPatch" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workstream" }
+        "400": { $ref: "#/components/responses/Validation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/VersionConflict" }
+
+  /dependencies:
+    get:
+      tags: [dependencies]
+      summary: List dependency edges (classification/enterprise-filtered; optional ?projectId=)
+      parameters:
+        - name: projectId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Dependency edges
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/TaskDependency" }
+    post:
+      tags: [dependencies]
+      summary: >
+        Create a typed dependency edge (manage-level authority). Both tasks
+        must share the same project; self-dependencies and edges that would
+        close a cycle (transitively, across all types) are refused with 400;
+        an identical (predecessor, successor, type) edge yields 409 DUPLICATE.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaskDependencyCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaskDependency" }
+        "400":
+          description: VALIDATION — unknown/cross-project task, bad type/lag, self-dependency, or dependency cycle (detail.path)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: DUPLICATE — this (predecessor, successor, type) edge already exists
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /dependencies/{id}:
+    parameters:
+      - $ref: "#/components/parameters/EntityId"
+    delete:
+      tags: [dependencies]
+      summary: Delete a dependency edge (manage-level authority; unlocks an FS-locked successor)
+      responses:
+        "204": { description: Deleted }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /gate-requests:
     get:
@@ -1464,13 +1639,21 @@ components:
           format: uuid
           nullable: true
           description: Prerequisite task id; null = unlocked
+        workstreamId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Workstream of the task's OWN project (400 otherwise)
+        plannedStart: { type: string, format: date, nullable: true }
+        plannedFinish: { type: string, format: date, nullable: true }
+        estimatedHours: { type: number, minimum: 0, nullable: true }
         riskTags:
           type: array
           items: { type: string }
         slaDueAt: { type: string, format: date-time, nullable: true }
         locked:
           type: boolean
-          description: Derived — prerequisite not done OR project security gate pending
+          description: Derived — dependencyLock prerequisite or any FS predecessor not done, OR project security gate pending
         version: { type: integer }
         updatedAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time }
@@ -1488,6 +1671,10 @@ components:
         status: { type: string }
         priority: { type: string }
         dependencyLock: { type: string, format: uuid, nullable: true }
+        workstreamId: { type: string, format: uuid, nullable: true }
+        plannedStart: { type: string, format: date, nullable: true }
+        plannedFinish: { type: string, format: date, nullable: true }
+        estimatedHours: { type: number, minimum: 0, nullable: true }
         riskTags:
           type: array
           items: { type: string }
@@ -1603,6 +1790,101 @@ components:
         version:
           type: integer
           description: Base version for OCC
+
+    Workstream:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        leadId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The workstream lead may PATCH without manage-level authority
+        startDate: { type: string, format: date, nullable: true }
+        endDate: { type: string, format: date, nullable: true }
+        status:
+          type: string
+          enum: [NOT_STARTED, IN_PROGRESS, DONE, ON_HOLD]
+        version: { type: integer }
+        updatedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    WorkstreamCreate:
+      type: object
+      required: [projectId, title]
+      properties:
+        projectId: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        leadId: { type: string, format: uuid, nullable: true }
+        startDate: { type: string, format: date, nullable: true }
+        endDate: { type: string, format: date, nullable: true }
+        status:
+          type: string
+          enum: [NOT_STARTED, IN_PROGRESS, DONE, ON_HOLD]
+
+    WorkstreamPatch:
+      allOf:
+        - $ref: "#/components/schemas/WorkstreamCreate"
+      type: object
+      required: [version]
+      properties:
+        version:
+          type: integer
+          description: Base version for OCC
+
+    TaskDependency:
+      type: object
+      description: >
+        Immutable typed dependency edge (create/delete only). FS locks the
+        successor until the predecessor is done; SS/FF/SF are scheduling-only.
+        The per-project graph is acyclic across all types.
+      properties:
+        id: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+        predecessorId: { type: string, format: uuid }
+        successorId: { type: string, format: uuid }
+        type: { type: string, enum: [FS, SS, FF, SF] }
+        lagDays:
+          type: integer
+          description: Lag in days (negative = lead); default 0
+        createdAt: { type: string, format: date-time }
+
+    TaskDependencyCreate:
+      type: object
+      required: [predecessorId, successorId]
+      properties:
+        predecessorId: { type: string, format: uuid }
+        successorId: { type: string, format: uuid }
+        type: { type: string, enum: [FS, SS, FF, SF], default: FS }
+        lagDays: { type: integer, default: 0 }
+
+    ScheduleTask:
+      type: object
+      properties:
+        taskId: { type: string, format: uuid }
+        earliestStart: { type: string, format: date }
+        earliestFinish: { type: string, format: date }
+        latestStart: { type: string, format: date }
+        latestFinish: { type: string, format: date }
+        slackDays: { type: integer }
+        critical:
+          type: boolean
+          description: slackDays === 0
+
+    Schedule:
+      type: object
+      properties:
+        tasks:
+          type: array
+          items: { $ref: "#/components/schemas/ScheduleTask" }
+        criticalPath:
+          type: array
+          description: Critical task ids in earliestStart order
+          items: { type: string, format: uuid }
 
     GateRequirement:
       type: object
@@ -1784,7 +2066,7 @@ components:
       required: [opId, entity, op]
       properties:
         opId: { type: string, format: uuid, description: Client-generated }
-        entity: { type: string, enum: [task, project, roadblock, milestone] }
+        entity: { type: string, enum: [task, project, roadblock, milestone, workstream] }
         entityId: { type: string, format: uuid }
         op: { type: string, enum: [update, create] }
         baseVersion: { type: integer }
