@@ -2,6 +2,7 @@
 
 // Group IT Management — portfolio matrix (divisions x status health) + executive deck export.
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useApp } from "@/lib/store";
 import { useToast } from "@/components/Toast";
@@ -14,7 +15,7 @@ import NewProjectButton from "@/components/NewProjectButton";
 import { RagCountPill } from "@/components/RagBadge";
 import { Pill } from "@/components/Badges";
 import { PageHeader, SectionHeader } from "@/components/Headings";
-import { DownloadIcon } from "@/components/Icons";
+import { ChevronRightIcon, DownloadIcon } from "@/components/Icons";
 import { Skeleton, SkeletonCard } from "@/components/Skeleton";
 
 const STATUS_ORDER: ProjectStatus[] = ["active", "at_risk", "on_hold", "draft", "complete"];
@@ -120,6 +121,13 @@ export default function ManagementDashboard() {
         }
         action={
           <div className="flex flex-wrap gap-2">
+            <Link
+              href="/portfolio"
+              className="flex min-h-[44px] items-center gap-1.5 rounded-xl border border-slate-300 px-4 text-sm font-semibold text-slate-700 transition hover:border-indigo-400 hover:text-indigo-700 dark:border-slate-600 dark:text-slate-200 dark:hover:border-indigo-500 dark:hover:text-indigo-300"
+            >
+              Portfolio Wall
+              <ChevronRightIcon className="h-4 w-4" />
+            </Link>
             <NewProjectButton />
             <button
               type="button"

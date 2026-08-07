@@ -30,6 +30,7 @@ import { approvalsRouter } from './routes/approvals.js';
 import { auditRouter } from './routes/audit.js';
 import { syncRouter } from './routes/sync.js';
 import { reportsRouter } from './routes/reports.js';
+import { kpisRouter, myWorkRouter, siteLensRouter } from './routes/overview.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OPENAPI_PATH = path.join(__dirname, '..', 'openapi.yaml');
@@ -65,12 +66,15 @@ export function createApp({ repo, authProvider = createEntraProvider() }) {
   app.use('/api', authMiddleware, requirePasswordChanged, forbidViewerWrites);
   app.use('/api/users', usersRouter()); // ADMIN-only user management
   app.use('/api/sites', sitesRouter()); // E01: GET open, POST/PATCH ADMIN
+  app.use('/api/sites', siteLensRouter()); // E22: GET /:code/lens (falls through sitesRouter)
   app.use('/api/divisions', divisionsRouter());
   app.use('/api/org', orgRouter());
   app.use('/api/pillars', pillarsRouter()); // E04: GET open, POST/PATCH ADMIN
   app.use('/api/portfolios', portfoliosRouter()); // E04: POST/PATCH ADMIN or DIVISION_LEAD
   app.use('/api/programs', programsRouter());
   app.use('/api/bootstrap', bootstrapRouter());
+  app.use('/api/my-work', myWorkRouter()); // E22 personal workspace (plan §44)
+  app.use('/api/kpis', kpisRouter()); // E22 Portfolio Wall banner (plan §45)
   app.use('/api/projects', projectsRouter());
   app.use('/api/milestones', milestonesRouter()); // E08 core
   app.use('/api/workstreams', workstreamsRouter()); // E07 core

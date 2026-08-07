@@ -207,6 +207,24 @@ export default function Header() {
               >
                 Dashboard
               </Link>
+              <Link
+                href="/my-work"
+                className="rounded-xl px-3 py-2 text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-700/60 dark:hover:text-white"
+              >
+                My Work
+              </Link>
+              <Link
+                href="/portfolio"
+                className="rounded-xl px-3 py-2 text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-700/60 dark:hover:text-white"
+              >
+                Portfolio
+              </Link>
+              <Link
+                href="/sites"
+                className="rounded-xl px-3 py-2 text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-700/60 dark:hover:text-white"
+              >
+                Sites
+              </Link>
               {(canDecide || user.division === "infosec" || user.division === "management") && (
                 <Link
                   href="/approvals"

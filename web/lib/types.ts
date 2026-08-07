@@ -623,6 +623,107 @@ export interface ConflictEntry {
   createdAt: string;
 }
 
+// ---- Wave 5 live views (My Work / Portfolio Wall / Site Lens) ---------------
+// All three are ONLINE-ONLY live reads (never new IndexedDB stores) — pages
+// render cached-fallback messaging while offline.
+
+export type WorkItemKind = "action" | "task" | "milestone" | "roadblock" | "capa" | (string & {});
+
+/** One row in a My Work due-date bucket. */
+export interface WorkBucketRef {
+  kind: WorkItemKind;
+  id: string;
+  title: string;
+  projectId?: string | null;
+  due: string;
+}
+
+export interface MyWorkBuckets {
+  overdue: WorkBucketRef[];
+  dueThisWeek: WorkBucketRef[];
+  upcoming: WorkBucketRef[];
+}
+
+/** Gate request decorated with its project's name/code for the My Work queue. */
+export interface MyWorkGateRequest extends GateRequest {
+  projectName?: string;
+  projectCode?: string;
+}
+
+/** GET /api/my-work — everything assigned to / awaiting the signed-in user. */
+export interface MyWorkResponse {
+  actions: Action[];
+  tasks: Task[];
+  milestones: Milestone[];
+  roadblocks: Roadblock[];
+  capas: Capa[];
+  approvals: SecurityApproval[];
+  gateRequests: MyWorkGateRequest[];
+  /** Decorated projects the user manages (PM / owner). */
+  managed: Project[];
+  buckets: MyWorkBuckets;
+}
+
+/** KPI totals — keys double as the drill map keys. */
+export interface KpiTotals {
+  projects: number;
+  green: number;
+  amber: number;
+  red: number;
+  onHold: number;
+  upcomingGoLives: number;
+  overdueMilestones: number;
+  criticalRoadblocks: number;
+  overdueActions: number;
+  gatesWaiting: number;
+}
+
+export type KpiKey = keyof KpiTotals;
+
+/** Echo of the active filters the server computed the KPIs under. */
+export interface KpiScope {
+  site?: string | null;
+  division?: string | null;
+  ragColor?: string | null;
+  lifecycleStage?: string | null;
+  portfolioId?: string | null;
+  [key: string]: unknown;
+}
+
+/** GET /api/kpis?site=&division=&ragColor=&lifecycleStage=&portfolioId= */
+export interface KpisResponse {
+  scope: KpiScope;
+  totals: KpiTotals;
+  /**
+   * Per-KPI id lists for drill-down. Project KPIs list project ids; entity KPIs
+   * (milestones/roadblocks/actions/gates) list entity ids that map to a project
+   * via their projectId.
+   */
+  drill: Partial<Record<KpiKey, string[]>>;
+}
+
+/** One person row in the Site Lens people section. Shape kept tolerant. */
+export interface SiteLensPerson {
+  id: string;
+  name: string;
+  division?: Division | null;
+  role?: string | null;
+  site?: string | null;
+  [key: string]: unknown;
+}
+
+/** GET /api/sites/:code/lens */
+export interface SiteLensResponse {
+  site: OrgSite;
+  projects: Project[];
+  /** Milestones due within 60 days at this site. */
+  milestonesDue: Milestone[];
+  openRoadblocks: Roadblock[];
+  risksOpen: Risk[];
+  capasOpen: Capa[];
+  people: SiteLensPerson[];
+}
+
 export interface AuditRow {
   id: string;
   entityId?: string;
