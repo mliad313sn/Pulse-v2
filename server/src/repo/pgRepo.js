@@ -6,7 +6,7 @@
  * layer runs the same checks first to produce friendly typed errors.
  */
 import pg from 'pg';
-import { dependencyLocked, forbidden, securityGate, validation } from '../errors.js';
+import { dependencyLocked, duplicate, forbidden, securityGate, validation } from '../errors.js';
 import { TABLES } from './tables.js';
 
 const { Pool } = pg;
@@ -54,10 +54,22 @@ const COLUMNS = {
     ownerId: 'owner_id', updatedAt: 'updated_at', createdAt: 'created_at',
   },
   task: {
-    id: 'id', projectId: 'project_id', title: 'title', description: 'description',
+    id: 'id', projectId: 'project_id', workstreamId: 'workstream_id',
+    title: 'title', description: 'description',
     division: 'division', site: 'site', assigneeId: 'assignee_id', status: 'status',
-    priority: 'priority', dependencyLock: 'dependency_lock', riskTags: 'risk_tags',
+    priority: 'priority', dependencyLock: 'dependency_lock',
+    plannedStart: 'planned_start', plannedFinish: 'planned_finish',
+    estimatedHours: 'estimated_hours', riskTags: 'risk_tags',
     slaDueAt: 'sla_due_at', version: 'version', updatedAt: 'updated_at', createdAt: 'created_at',
+  },
+  workstream: {
+    id: 'id', projectId: 'project_id', title: 'title', description: 'description',
+    leadId: 'lead_id', startDate: 'start_date', endDate: 'end_date', status: 'status',
+    version: 'version', updatedAt: 'updated_at', createdAt: 'created_at',
+  },
+  dependency: {
+    id: 'id', projectId: 'project_id', predecessorId: 'predecessor_id',
+    successorId: 'successor_id', type: 'type', lagDays: 'lag_days', createdAt: 'created_at',
   },
   roadblock: {
     id: 'id', projectId: 'project_id', taskId: 'task_id', description: 'description',
@@ -77,6 +89,8 @@ const DATE_ONLY = {
   portfolio: new Set(['dateFrom', 'dateTo']),
   project: new Set(['startDate', 'targetDate', 'actualEndDate']),
   milestone: new Set(['baselineDue', 'forecastDue', 'actualCompleted']),
+  task: new Set(['plannedStart', 'plannedFinish']),
+  workstream: new Set(['startDate', 'endDate']),
 };
 
 function mapRow(kind, row) {
@@ -147,6 +161,18 @@ function translateDbError(err) {
   const msg = String(err?.message ?? '');
   if (msg.includes('DEPENDENCY_LOCKED')) return dependencyLocked();
   if (msg.includes('SECURITY_GATE')) return securityGate();
+  if (msg.includes('DEPENDENCY_CYCLE')) {
+    return validation('Creating this dependency would close a dependency cycle');
+  }
+  if (msg.includes('DEPENDENCY_PROJECT_MISMATCH')) {
+    return validation('predecessor and successor must belong to the same project');
+  }
+  if (msg.includes('WORKSTREAM_PROJECT_MISMATCH')) {
+    return validation('Task workstream must belong to the task project');
+  }
+  if (msg.includes('uniq_dependency_edge')) {
+    return duplicate('This dependency edge already exists');
+  }
   if (msg.includes('PROJECT_CODE_IMMUTABLE')) return validation('Project code is server-generated and immutable');
   if (msg.includes('VIEWER_CANNOT_LEAD')) {
     return validation('VIEWER users cannot be assigned PM or WORKSTREAM_LEAD');
@@ -420,6 +446,12 @@ class PgQueries {
       params,
     );
     return mapRow(kind, rows[0] ?? null);
+  }
+
+  /** @returns {boolean} whether a row was removed (DB trigger audits the DELETE). */
+  async delete(kind, id) {
+    const { rowCount } = await this._query(`DELETE FROM ${TABLES[kind]} WHERE id = $1`, [id]);
+    return rowCount > 0;
   }
 
   // ---- approval ledger (E05 — push-only, invariant 11) ---------------------

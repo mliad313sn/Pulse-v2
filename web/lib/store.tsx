@@ -28,6 +28,7 @@ import { useToast } from "@/components/Toast";
 import type {
   Bootstrap,
   ConflictEntry,
+  DependencyType,
   LoginResponse,
   Milestone,
   MilestoneType,
@@ -39,7 +40,10 @@ import type {
   SecurityApproval,
   SyncEntity,
   Task,
+  TaskDependency,
   User,
+  Workstream,
+  WorkstreamStatus,
 } from "./types";
 
 // Cleared on logout / session expiry (plan §125: clear sensitive caches on logout).
@@ -58,6 +62,8 @@ const IDB_STORES: idb.StoreName[] = [
   "programs",
   "members",
   "milestones",
+  "workstreams",
+  "dependencies",
 ];
 
 type EntityListKey = "projects" | "tasks" | "roadblocks";
@@ -83,6 +89,8 @@ export interface AppState {
   roadblocks: Roadblock[];
   approvals: SecurityApproval[];
   milestones: Milestone[];
+  workstreams: Workstream[];
+  dependencies: TaskDependency[];
   conflicts: ConflictEntry[];
   online: boolean;
   syncing: boolean;
@@ -100,6 +108,8 @@ export interface MutateOutcome {
   ok: boolean;
   queued?: boolean;
   code?: string;
+  /** Server error message (e.g. cycle validation) for inline display in dialogs. */
+  message?: string;
 }
 
 interface AppActions {
@@ -141,6 +151,36 @@ interface AppActions {
   }) => Promise<MutateOutcome>;
   /** ONLINE-ONLY (governance mutation — never queued to the outbox). OCC via version. */
   updateMilestone: (id: string, fields: Partial<Milestone>) => Promise<MutateOutcome>;
+  /** ONLINE-ONLY (planning mutation — never queued to the outbox). */
+  createWorkstream: (input: {
+    projectId: string;
+    title: string;
+    description?: string | null;
+    leadId?: string | null;
+    startDate?: string | null;
+    endDate?: string | null;
+    status?: WorkstreamStatus;
+  }) => Promise<MutateOutcome>;
+  /** ONLINE-ONLY (planning mutation — never queued to the outbox). OCC via version. */
+  updateWorkstream: (id: string, fields: Partial<Workstream>) => Promise<MutateOutcome>;
+  /**
+   * ONLINE-ONLY task planning-field edit (workstreamId/plannedStart/plannedFinish/
+   * estimatedHours). Task STATUS moves stay on the offline-capable moveTask path.
+   */
+  updateTaskPlan: (
+    id: string,
+    fields: Partial<Pick<Task, "workstreamId" | "plannedStart" | "plannedFinish" | "estimatedHours">>,
+  ) => Promise<MutateOutcome>;
+  /** ONLINE-ONLY. Cycle attempts return { ok:false, message } (400 VALIDATION). */
+  createDependency: (input: {
+    projectId: string;
+    predecessorId: string;
+    successorId: string;
+    type: DependencyType;
+    lagDays: number;
+  }) => Promise<MutateOutcome>;
+  /** ONLINE-ONLY. */
+  deleteDependency: (id: string) => Promise<MutateOutcome>;
   /** Re-fetch /api/bootstrap (refreshes derived project progress after governance changes). */
   refresh: () => Promise<void>;
   lockedReason: (task: Task) => LockedReason | null;
@@ -161,6 +201,8 @@ const INITIAL_STATE: AppState = {
   roadblocks: [],
   approvals: [],
   milestones: [],
+  workstreams: [],
+  dependencies: [],
   conflicts: [],
   online: true,
   syncing: false,
@@ -184,6 +226,15 @@ function upsert<T extends { id: string }>(list: T[], item: T): T[] {
   const next = list.slice();
   next[idx] = item;
   return next;
+}
+
+function looksLikeDependency(value: unknown): value is TaskDependency {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { id?: unknown }).id === "string" &&
+    typeof (value as { predecessorId?: unknown }).predecessorId === "string"
+  );
 }
 
 function looksLikeEntity(value: unknown): value is { id: string; version: number } {
@@ -384,14 +435,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const tasks = rebase(boot.tasks ?? [], "task");
       const roadblocks = rebase(boot.roadblocks ?? [], "roadblock");
       const approvals = boot.approvals ?? [];
-      // Milestone mutations are online-only (never queued) — no rebase needed.
+      // Milestone/workstream/dependency mutations are online-only (never queued)
+      // — no rebase needed.
       const milestones = boot.milestones ?? [];
+      const workstreams = boot.workstreams ?? [];
+      const dependencies = boot.dependencies ?? [];
       await Promise.all([
         idb.replaceAll("projects", projects),
         idb.replaceAll("tasks", tasks),
         idb.replaceAll("roadblocks", roadblocks),
         idb.replaceAll("approvals", approvals),
         idb.replaceAll("milestones", milestones),
+        idb.replaceAll("workstreams", workstreams),
+        idb.replaceAll("dependencies", dependencies),
         idb.setMeta("refreshedAt", boot.serverTime),
         boot.user ? idb.setMeta("currentUser", boot.user) : Promise.resolve(),
       ]);
@@ -401,6 +457,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         roadblocks,
         approvals,
         milestones,
+        workstreams,
+        dependencies,
         refreshedAt: boot.serverTime ?? new Date().toISOString(),
         user: boot.user ?? s.user,
         bootLoading: false,
@@ -437,6 +495,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       roadblocks: [],
       approvals: [],
       milestones: [],
+      workstreams: [],
+      dependencies: [],
       conflicts: [],
       outboxCount: 0,
       refreshedAt: null,
@@ -863,6 +923,199 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [guardWrite, toast, setMilestone, refresh],
   );
 
+  // ---- workstreams + dependencies (Wave 3 planning — ONLINE-ONLY) ----------
+
+  const setWorkstream = useCallback(
+    (w: Workstream) => {
+      patch((prev) => ({ workstreams: upsert(prev.workstreams, w) }));
+      void idb.put("workstreams", w);
+    },
+    [patch],
+  );
+
+  const createWorkstream = useCallback(
+    async (input: {
+      projectId: string;
+      title: string;
+      description?: string | null;
+      leadId?: string | null;
+      startDate?: string | null;
+      endDate?: string | null;
+      status?: WorkstreamStatus;
+    }): Promise<MutateOutcome> => {
+      const denied = guardWrite();
+      if (denied) return denied;
+      if (!stateRef.current.online) {
+        toast("Workstream changes need a live connection.", "warning");
+        return { ok: false, code: "OFFLINE" };
+      }
+      try {
+        const res = await api<unknown>("/api/workstreams", {
+          method: "POST",
+          body: {
+            projectId: input.projectId,
+            title: input.title,
+            description: input.description || undefined,
+            leadId: input.leadId || undefined,
+            startDate: input.startDate || undefined,
+            endDate: input.endDate || undefined,
+            status: input.status || undefined,
+          },
+        });
+        if (looksLikeEntity(res)) setWorkstream(res as unknown as Workstream);
+        return { ok: true };
+      } catch (e) {
+        if (e instanceof ApiError) {
+          toast(e.message || `Workstream not created (${e.code}).`, "error");
+          return { ok: false, code: e.code, message: e.message };
+        }
+        toast("Network error — workstream not created.", "error");
+        return { ok: false, code: "NETWORK" };
+      }
+    },
+    [guardWrite, toast, setWorkstream],
+  );
+
+  const updateWorkstream = useCallback(
+    async (id: string, fields: Partial<Workstream>): Promise<MutateOutcome> => {
+      const denied = guardWrite();
+      if (denied) return denied;
+      if (!stateRef.current.online) {
+        toast("Workstream changes need a live connection.", "warning");
+        return { ok: false, code: "OFFLINE" };
+      }
+      const current = stateRef.current.workstreams.find((w) => w.id === id);
+      if (!current) return { ok: false, code: "NOT_FOUND" };
+      try {
+        const res = await api<unknown>(`/api/workstreams/${id}`, {
+          method: "PATCH",
+          body: { ...fields, version: current.version ?? 1 },
+        });
+        if (looksLikeEntity(res)) {
+          setWorkstream(res as unknown as Workstream);
+        } else {
+          setWorkstream({ ...current, ...fields, version: (current.version ?? 1) + 1 });
+        }
+        return { ok: true };
+      } catch (e) {
+        if (e instanceof ApiError) {
+          if (e.status === 409) {
+            if (looksLikeEntity(e.serverState)) setWorkstream(e.serverState as unknown as Workstream);
+            toast("Someone else updated this workstream first — refreshed to the latest version.", "warning");
+            return { ok: false, code: e.code };
+          }
+          toast(e.message || `Workstream change rejected (${e.code}).`, "error");
+          return { ok: false, code: e.code, message: e.message };
+        }
+        toast("Network error — workstream not updated.", "error");
+        return { ok: false, code: "NETWORK" };
+      }
+    },
+    [guardWrite, toast, setWorkstream],
+  );
+
+  const updateTaskPlan = useCallback(
+    async (
+      id: string,
+      fields: Partial<Pick<Task, "workstreamId" | "plannedStart" | "plannedFinish" | "estimatedHours">>,
+    ): Promise<MutateOutcome> => {
+      const denied = guardWrite();
+      if (denied) return denied;
+      if (!stateRef.current.online) {
+        toast("Task planning changes need a live connection.", "warning");
+        return { ok: false, code: "OFFLINE" };
+      }
+      const current = stateRef.current.tasks.find((t) => t.id === id);
+      if (!current) return { ok: false, code: "NOT_FOUND" };
+      try {
+        const res = await api<unknown>(`/api/tasks/${id}`, {
+          method: "PATCH",
+          body: { ...fields, version: current.version ?? 1 },
+        });
+        if (looksLikeEntity(res)) {
+          setEntity("tasks", res as unknown as Task);
+        } else {
+          setEntity("tasks", { ...current, ...fields, version: (current.version ?? 1) + 1 } as Task);
+        }
+        return { ok: true };
+      } catch (e) {
+        if (e instanceof ApiError) {
+          if (e.status === 409) {
+            if (looksLikeEntity(e.serverState)) setEntity("tasks", e.serverState as unknown as Task);
+            toast("Someone else updated this task first — refreshed to the latest version.", "warning");
+            return { ok: false, code: e.code };
+          }
+          toast(e.message || `Task change rejected (${e.code}).`, "error");
+          return { ok: false, code: e.code, message: e.message };
+        }
+        toast("Network error — task not updated.", "error");
+        return { ok: false, code: "NETWORK" };
+      }
+    },
+    [guardWrite, toast, setEntity],
+  );
+
+  const createDependency = useCallback(
+    async (input: {
+      projectId: string;
+      predecessorId: string;
+      successorId: string;
+      type: DependencyType;
+      lagDays: number;
+    }): Promise<MutateOutcome> => {
+      const denied = guardWrite();
+      if (denied) return denied;
+      if (!stateRef.current.online) {
+        toast("Dependency changes need a live connection.", "warning");
+        return { ok: false, code: "OFFLINE" };
+      }
+      try {
+        const res = await api<unknown>("/api/dependencies", { method: "POST", body: input });
+        if (looksLikeDependency(res)) {
+          patch((prev) => ({ dependencies: upsert(prev.dependencies, res) }));
+          void idb.put("dependencies", res);
+        }
+        // Dependencies drive the server-derived task `locked` flag — re-read.
+        await refresh();
+        return { ok: true };
+      } catch (e) {
+        if (e instanceof ApiError) {
+          // 400 VALIDATION (e.g. "would create a cycle") — surfaced inline by the dialog.
+          return { ok: false, code: e.code, message: e.message };
+        }
+        toast("Network error — dependency not created.", "error");
+        return { ok: false, code: "NETWORK" };
+      }
+    },
+    [guardWrite, toast, patch, refresh],
+  );
+
+  const deleteDependency = useCallback(
+    async (id: string): Promise<MutateOutcome> => {
+      const denied = guardWrite();
+      if (denied) return denied;
+      if (!stateRef.current.online) {
+        toast("Dependency changes need a live connection.", "warning");
+        return { ok: false, code: "OFFLINE" };
+      }
+      try {
+        await api(`/api/dependencies/${id}`, { method: "DELETE" });
+        patch((prev) => ({ dependencies: prev.dependencies.filter((d) => d.id !== id) }));
+        void idb.del("dependencies", id);
+        // Removal can unlock successors — re-read the server-derived flags.
+        await refresh();
+        return { ok: true };
+      } catch (e) {
+        if (e instanceof ApiError) {
+          return { ok: false, code: e.code, message: e.message };
+        }
+        toast("Network error — dependency not removed.", "error");
+        return { ok: false, code: "NETWORK" };
+      }
+    },
+    [guardWrite, toast, patch, refresh],
+  );
+
   // ---- boot & connectivity --------------------------------------------------
 
   /**
@@ -895,7 +1148,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     (async () => {
       const online = typeof navigator !== "undefined" ? navigator.onLine : true;
-      const [users, projects, tasks, roadblocks, approvals, milestones, conflicts, queuedCount, cachedUser, refreshedAt] =
+      const [users, projects, tasks, roadblocks, approvals, milestones, workstreams, dependencies, conflicts, queuedCount, cachedUser, refreshedAt] =
         await Promise.all([
           idb.getAll<User>("users"),
           idb.getAll<Project>("projects"),
@@ -903,6 +1156,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           idb.getAll<Roadblock>("roadblocks"),
           idb.getAll<SecurityApproval>("approvals"),
           idb.getAll<Milestone>("milestones"),
+          idb.getAll<Workstream>("workstreams"),
+          idb.getAll<TaskDependency>("dependencies"),
           idb.getAll<ConflictEntry>("conflicts"),
           outboxCount(),
           idb.getMeta<User>("currentUser"),
@@ -921,6 +1176,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         roadblocks,
         approvals,
         milestones,
+        workstreams,
+        dependencies,
         conflicts,
         outboxCount: queuedCount,
         user,
@@ -1010,6 +1267,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       upsertProject,
       createMilestone,
       updateMilestone,
+      createWorkstream,
+      updateWorkstream,
+      updateTaskPlan,
+      createDependency,
+      deleteDependency,
       refresh,
       lockedReason,
       lockedMessage,
@@ -1032,6 +1294,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       upsertProject,
       createMilestone,
       updateMilestone,
+      createWorkstream,
+      updateWorkstream,
+      updateTaskPlan,
+      createDependency,
+      deleteDependency,
       refresh,
       lockedReason,
       lockedMessage,

@@ -200,11 +200,61 @@ export interface Task {
   dependencyLock?: string | null;
   riskTags?: string[];
   slaDueAt?: string | null;
+  // ---- Wave 3 planning fields ----
+  workstreamId?: string | null;
+  plannedStart?: string | null;
+  plannedFinish?: string | null;
+  estimatedHours?: number | null;
   version: number;
   updatedAt: string;
   createdAt?: string;
   /** Server-derived: prerequisite not done OR project security gate pending. */
   locked?: boolean;
+}
+
+// ---- Workstreams + dependencies + schedule (Wave 3) -------------------------
+
+export type WorkstreamStatus = "NOT_STARTED" | "IN_PROGRESS" | "DONE" | "ON_HOLD";
+
+export interface Workstream {
+  id: string;
+  projectId: string;
+  title: string;
+  description?: string | null;
+  leadId?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  status: WorkstreamStatus;
+  version: number;
+  updatedAt: string;
+  createdAt?: string;
+}
+
+export type DependencyType = "FS" | "SS" | "FF" | "SF";
+
+export interface TaskDependency {
+  id: string;
+  projectId: string;
+  predecessorId: string;
+  successorId: string;
+  type: DependencyType;
+  lagDays: number;
+}
+
+/** One row of GET /api/projects/:id/schedule (CPM output, server-computed). */
+export interface ScheduleTask {
+  taskId: string;
+  earliestStart: string;
+  earliestFinish: string;
+  latestStart: string;
+  latestFinish: string;
+  slackDays: number;
+  critical: boolean;
+}
+
+export interface ScheduleResponse {
+  tasks: ScheduleTask[];
+  criticalPath: string[];
 }
 
 /** Target for the "Log Roadblock" sheet — a project, optionally scoped to a task. */
@@ -333,6 +383,8 @@ export interface Bootstrap {
   roadblocks: Roadblock[];
   approvals: SecurityApproval[];
   milestones?: Milestone[];
+  workstreams?: Workstream[];
+  dependencies?: TaskDependency[];
   serverTime: string;
 }
 

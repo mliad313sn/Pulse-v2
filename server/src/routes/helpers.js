@@ -66,34 +66,42 @@ export async function withPmOne(repo, project) {
 }
 
 /**
- * Decorate tasks with the derived `locked` flag.
- * `preloaded` lets callers that already fetched the full task/project lists
- * (e.g. bootstrap) avoid a second round of repo.list calls.
+ * Decorate tasks with the derived `locked` flag (dependencyLock + FS typed
+ * dependencies + security gate — E07).
+ * `preloaded` lets callers that already fetched the full task/project/
+ * dependency lists (e.g. bootstrap) avoid a second round of repo.list calls.
  */
 export async function withLocked(repo, tasks, preloaded = {}) {
-  const [allTasks, projects] = await Promise.all([
+  const [allTasks, projects, dependencies] = await Promise.all([
     preloaded.tasks ?? repo.list('task'),
     preloaded.projects ?? repo.list('project'),
+    preloaded.dependencies ?? repo.list('dependency'),
   ]);
   const tasksById = new Map(allTasks.map((t) => [t.id, t]));
   const projectsById = new Map(projects.map((p) => [p.id, p]));
+  const depsByProject = groupByProject(dependencies);
   return tasks.map((t) => ({
     ...t,
-    locked: computeLocked(t, tasksById, projectsById.get(t.projectId)),
+    locked: computeLocked(t, tasksById, projectsById.get(t.projectId), depsByProject.get(t.projectId) ?? []),
   }));
 }
 
 /**
  * Single-task variant of withLocked: fetches only what computeLocked needs —
- * the prerequisite task (if any) and the parent project.
+ * the project's dependency edges, the predecessor tasks and the parent project.
  */
 export async function withLockedOne(repo, task) {
-  const [dep, project] = await Promise.all([
-    task.dependencyLock ? repo.get('task', task.dependencyLock) : null,
+  const [project, projectDeps] = await Promise.all([
     repo.get('project', task.projectId),
+    repo.list('dependency', { projectId: task.projectId }),
   ]);
-  const tasksById = new Map(dep ? [[dep.id, dep]] : []);
-  return { ...task, locked: computeLocked(task, tasksById, project) };
+  const predIds = new Set(
+    projectDeps.filter((d) => d.successorId === task.id && d.type === 'FS').map((d) => d.predecessorId),
+  );
+  if (task.dependencyLock) predIds.add(task.dependencyLock);
+  const tasksById = new Map();
+  for (const id of predIds) tasksById.set(id, await repo.get('task', id));
+  return { ...task, locked: computeLocked(task, tasksById, project, projectDeps) };
 }
 
 /**

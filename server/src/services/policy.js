@@ -185,6 +185,17 @@ export function canWriteMilestone(user, project, milestone, members = []) {
 }
 
 /**
+ * Workstream write (E07): manage-level authority OR the workstream's lead.
+ * Creates (`workstream` null) require manage-level authority — a contributor
+ * cannot mint a workstream and grant themselves write access by self-leading.
+ */
+export function canWriteWorkstream(user, project, workstream, members = []) {
+  if (!canWrite(user)) return false;
+  if (canManageProjectWork(user, project, members)) return true;
+  return workstream != null && workstream.leadId === user.id;
+}
+
+/**
  * Roadblock write for non-managers. Creates (`roadblock` null) are open to any
  * writer who can read the project — they become the reporter (field logging).
  */

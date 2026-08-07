@@ -1,4 +1,5 @@
 import type {
+  DependencyType,
   Division,
   LifecycleStage,
   Milestone,
@@ -14,6 +15,7 @@ import type {
   Task,
   TaskStatus,
   User,
+  WorkstreamStatus,
 } from "./types";
 
 /** Tiny classnames helper. */
@@ -305,6 +307,50 @@ export function computeProgress(milestones: Milestone[]): ProjectProgress {
     explanation: `${completedWeight} of ${activeWeight} weight completed across ${active.length} milestone${active.length === 1 ? "" : "s"}`,
   };
 }
+
+// ---- Workstreams + dependencies (Wave 3 planning) ---------------------------
+
+export const WORKSTREAM_STATUSES: WorkstreamStatus[] = [
+  "NOT_STARTED",
+  "IN_PROGRESS",
+  "DONE",
+  "ON_HOLD",
+];
+
+export const WORKSTREAM_STATUS_META: Record<
+  WorkstreamStatus,
+  { label: string; badge: string; dot: string }
+> = {
+  NOT_STARTED: {
+    label: "Not started",
+    badge: "bg-slate-100 text-slate-600 dark:bg-slate-700/60 dark:text-slate-300",
+    dot: "bg-slate-400",
+  },
+  IN_PROGRESS: {
+    label: "In progress",
+    badge: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
+    dot: "bg-blue-500",
+  },
+  DONE: {
+    label: "Done",
+    badge: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300",
+    dot: "bg-emerald-500",
+  },
+  ON_HOLD: {
+    label: "On hold",
+    badge: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300",
+    dot: "bg-amber-500",
+  },
+};
+
+export const DEPENDENCY_TYPES: DependencyType[] = ["FS", "SS", "FF", "SF"];
+
+export const DEPENDENCY_TYPE_LABELS: Record<DependencyType, string> = {
+  FS: "Finish → Start",
+  SS: "Start → Start",
+  FF: "Finish → Finish",
+  SF: "Start → Finish",
+};
 
 /** Project member roles in display order (PM/SPONSOR first). */
 export const PROJECT_ROLES: ProjectRole[] = [

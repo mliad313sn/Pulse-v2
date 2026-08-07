@@ -13,7 +13,7 @@ import {
 import { assertCan, canReadProject } from './policy.js';
 import { ensureSecurityRouting } from './securityRouting.js';
 
-const ENTITIES = ['task', 'project', 'roadblock', 'milestone'];
+const ENTITIES = ['task', 'project', 'roadblock', 'milestone', 'workstream'];
 
 export async function processSyncBatch(repo, user, body) {
   if (!body || typeof body.clientId !== 'string' || body.clientId.length === 0) {

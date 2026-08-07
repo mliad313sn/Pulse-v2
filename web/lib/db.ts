@@ -1,12 +1,13 @@
 // Hand-rolled IndexedDB wrapper (no libraries).
 // Stores: projects, tasks, roadblocks, approvals, users, outbox, conflicts, meta,
-// pillars, portfolios, programs, members, milestones.
+// pillars, portfolios, programs, members, milestones, workstreams, dependencies.
 
 const DB_NAME = "opspm360";
 // v2: added pillars/portfolios/programs/members (Wave 1 slice 2).
-// v3: added milestones (Wave 2 governance). onupgradeneeded only creates stores
-// that are missing, so upgrades from any prior version are safe.
-const DB_VERSION = 3;
+// v3: added milestones (Wave 2 governance).
+// v4: added workstreams + dependencies (Wave 3 planning). onupgradeneeded only
+// creates stores that are missing, so upgrades from any prior version are safe.
+const DB_VERSION = 4;
 
 export type StoreName =
   | "projects"
@@ -21,7 +22,9 @@ export type StoreName =
   | "portfolios"
   | "programs"
   | "members"
-  | "milestones";
+  | "milestones"
+  | "workstreams"
+  | "dependencies";
 
 const STORE_KEYS: Record<StoreName, string> = {
   projects: "id",
@@ -39,6 +42,8 @@ const STORE_KEYS: Record<StoreName, string> = {
   // carry a synthesized `mid` key (see lib/orgData.ts).
   members: "mid",
   milestones: "id",
+  workstreams: "id",
+  dependencies: "id",
 };
 
 let dbPromise: Promise<IDBDatabase> | null = null;

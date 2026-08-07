@@ -11,6 +11,8 @@ import {
   evaluateGate, gateForStage, loadGateContext, nextStage,
 } from '../services/gateEngine.js';
 import { gateRequestWire } from './gates.js';
+import { dependencyWire } from './dependencies.js';
+import { computeSchedule } from '../services/schedule.js';
 import { forbidden, gateRequestPending, gateRequirementsNotMet, notFound, validation } from '../errors.js';
 import { nowIso } from '../services/time.js';
 import { randomUUID } from 'node:crypto';
@@ -53,6 +55,43 @@ export function projectsRouter() {
     const members = await repo.listProjectMembers(project.id);
     assertReadProject(req.user, project, 'project', req.params.id, members);
     res.json(await repo.list('milestone', { projectId: project.id }));
+  }));
+
+  // ---- workstreams + dependencies + schedule (E07 core) --------------------
+
+  /** Loads project with concealment; returns it. */
+  async function loadReadableProject(repo, user, id) {
+    const project = await repo.get('project', id);
+    if (!project) throw notFound(`project ${id} not found`);
+    const members = await repo.listProjectMembers(project.id);
+    assertReadProject(user, project, 'project', id, members);
+    return project;
+  }
+
+  router.get('/:id/workstreams', asyncHandler(async (req, res) => {
+    const repo = req.app.locals.repo;
+    const project = await loadReadableProject(repo, req.user, req.params.id);
+    res.json(await repo.list('workstream', { projectId: project.id }));
+  }));
+
+  router.get('/:id/dependencies', asyncHandler(async (req, res) => {
+    const repo = req.app.locals.repo;
+    const project = await loadReadableProject(repo, req.user, req.params.id);
+    res.json((await repo.list('dependency', { projectId: project.id })).map(dependencyWire));
+  }));
+
+  /**
+   * GET /api/projects/:id/schedule — CPM forward/backward pass over the
+   * project's tasks + typed dependencies (services/schedule.js). Any reader.
+   */
+  router.get('/:id/schedule', asyncHandler(async (req, res) => {
+    const repo = req.app.locals.repo;
+    const project = await loadReadableProject(repo, req.user, req.params.id);
+    const [tasks, dependencies] = await Promise.all([
+      repo.list('task', { projectId: project.id }),
+      repo.list('dependency', { projectId: project.id }),
+    ]);
+    res.json(computeSchedule(tasks, dependencies));
   }));
 
   // ---- gate engine (E05) ---------------------------------------------------

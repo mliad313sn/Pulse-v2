@@ -119,6 +119,7 @@ function seedFixtures() {
       title: 'Complete server room site prep (power + cooling)',
       description: null, division: 'ops', site: 'saly', assigneeId: u(1),
       status: 'in_progress', priority: 'high', dependencyLock: null,
+      workstreamId: null, plannedStart: null, plannedFinish: null, estimatedHours: null,
       riskTags: [], slaDueAt: null, version: 1, updatedAt: t0, createdAt: t0,
     },
     {
@@ -128,6 +129,7 @@ function seedFixtures() {
       description: null, division: 'infra', site: 'saly', assigneeId: u(2),
       status: 'todo', priority: 'critical',
       dependencyLock: '20000000-0000-0000-0000-000000000001',
+      workstreamId: null, plannedStart: null, plannedFinish: null, estimatedHours: null,
       riskTags: [], slaDueAt: null, version: 1, updatedAt: t0, createdAt: t0,
     },
     {
@@ -136,6 +138,7 @@ function seedFixtures() {
       title: 'Validate ERP module in staging',
       description: null, division: 'bizapps', site: 'hq', assigneeId: u(6),
       status: 'todo', priority: 'normal', dependencyLock: null,
+      workstreamId: null, plannedStart: null, plannedFinish: null, estimatedHours: null,
       riskTags: [], slaDueAt: null, version: 1, updatedAt: t0, createdAt: t0,
     },
   ];
@@ -184,6 +187,8 @@ export class MemoryRepo {
       program: [],
       milestone: [],
       gateRequest: [],
+      workstream: [],
+      dependency: [],
     };
     // E05 approval ledger — push-only (invariant 11). There is deliberately
     // NO update/delete method for it anywhere on this repository; entries are
@@ -465,6 +470,16 @@ export class MemoryRepo {
     table[idx] = stored;
     this._recordAudit('UPDATE', kind, old, stored);
     return stored;
+  }
+
+  /** @returns {boolean} whether a row was removed (audited as DELETE). */
+  async delete(kind, id) {
+    const table = this._table(kind);
+    const idx = table.findIndex((r) => r.id === id);
+    if (idx === -1) return false;
+    const [old] = table.splice(idx, 1);
+    this._recordAudit('DELETE', kind, old, null);
+    return true;
   }
 
   // ---- approval ledger (E05 — push-only, invariant 11) ---------------------

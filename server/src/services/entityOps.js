@@ -21,7 +21,7 @@ import { assertCanAdvance, assertLifecycleChange, LIFECYCLE_STAGES } from './gat
 import { applyUpdate } from './occ.js';
 import {
   CLASSIFICATIONS, canManageProjectWork, canReadProject, canSetClassification,
-  canWriteMilestone, canWriteRoadblock, canWriteTask,
+  canWriteMilestone, canWriteRoadblock, canWriteTask, canWriteWorkstream,
 } from './policy.js';
 import { ensureSecurityRouting } from './securityRouting.js';
 import { nowIso } from './time.js';
@@ -33,6 +33,8 @@ export const MILESTONE_TYPES = [
   'GOVERNANCE_GATE', 'OPERATIONAL_HANDOVER',
 ];
 export const MILESTONE_STATUSES = ['NOT_STARTED', 'IN_PROGRESS', 'DONE', 'SLIPPED', 'CANCELLED'];
+
+export const WORKSTREAM_STATUSES = ['NOT_STARTED', 'IN_PROGRESS', 'DONE', 'ON_HOLD'];
 
 export const ENTITY_DEFS = {
   project: {
@@ -110,12 +112,33 @@ export const ENTITY_DEFS = {
     userRefs: ['ownerId'],
     intFields: { weight: 1 }, // integer >= 1 (progress weighting, plan §23)
   },
+  workstream: {
+    required: ['projectId', 'title'],
+    parentRef: 'projectId',
+    writable: [
+      'projectId', 'title', 'description', 'leadId', 'startDate', 'endDate', 'status',
+    ],
+    defaults: () => ({
+      description: null,
+      leadId: null,
+      startDate: null,
+      endDate: null,
+      status: 'NOT_STARTED',
+    }),
+    enums: {
+      status: WORKSTREAM_STATUSES,
+    },
+    dateFields: ['startDate', 'endDate'],
+    userRefs: ['leadId'],
+  },
   task: {
     required: ['projectId', 'title'],
     parentRef: 'projectId',
     writable: [
       'projectId', 'title', 'description', 'division', 'site', 'assigneeId',
       'status', 'priority', 'dependencyLock', 'riskTags', 'slaDueAt',
+      // E07: workstream membership + scheduling fields (plan §18/§20).
+      'workstreamId', 'plannedStart', 'plannedFinish', 'estimatedHours',
     ],
     defaults: () => ({
       description: null,
@@ -127,11 +150,17 @@ export const ENTITY_DEFS = {
       dependencyLock: null,
       riskTags: [],
       slaDueAt: null,
+      workstreamId: null,
+      plannedStart: null,
+      plannedFinish: null,
+      estimatedHours: null,
     }),
     enums: {
       status: ['todo', 'in_progress', 'blocked', 'done'],
       priority: ['low', 'normal', 'high', 'critical'],
     },
+    dateFields: ['plannedStart', 'plannedFinish'],
+    numberFields: { estimatedHours: 0 }, // number >= 0 (scheduling estimate)
   },
   roadblock: {
     required: ['projectId', 'description'],
@@ -173,9 +202,11 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
  * Structural field rules beyond enums (shared by create/PATCH/sync):
- *   - def.intFields  {field: min} -> integer >= min (e.g. milestone weight >= 1);
- *   - def.dateFields [field]      -> null or ISO date 'YYYY-MM-DD' (matches the
- *     DATE columns in Postgres so both repos round-trip identically).
+ *   - def.intFields    {field: min} -> integer >= min (e.g. milestone weight >= 1);
+ *   - def.numberFields {field: min} -> null or finite number >= min
+ *     (e.g. task estimatedHours >= 0);
+ *   - def.dateFields   [field]      -> null or ISO date 'YYYY-MM-DD' (matches
+ *     the DATE columns in Postgres so both repos round-trip identically).
  */
 export function assertFieldRules(def, fields) {
   for (const [key, min] of Object.entries(def.intFields ?? {})) {
@@ -183,6 +214,13 @@ export function assertFieldRules(def, fields) {
     if (v === undefined) continue;
     if (!Number.isInteger(v) || v < min) {
       throw validation(`${key} must be an integer >= ${min}`, { field: key });
+    }
+  }
+  for (const [key, min] of Object.entries(def.numberFields ?? {})) {
+    const v = fields[key];
+    if (v === undefined || v === null) continue;
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < min) {
+      throw validation(`${key} must be a number >= ${min}`, { field: key });
     }
   }
   for (const key of def.dateFields ?? []) {
@@ -309,6 +347,27 @@ export function assertOperationalWrite(actor, kind, current, project, members) {
     if (!canWriteMilestone(actor, project, current, members)) {
       throw forbidden('Milestone writes require project management authority or being the milestone owner');
     }
+    return;
+  }
+  if (kind === 'workstream') {
+    if (!canWriteWorkstream(actor, project, current, members)) {
+      throw forbidden('Workstream writes require project management authority or being the workstream lead');
+    }
+  }
+}
+
+/**
+ * E07: a task's workstream (when set) must exist AND belong to the task's own
+ * project -> 400 VALIDATION otherwise. A workstream of another project is
+ * indistinguishable from an unknown id (no existence leak — the caller already
+ * passed the project read check for `projectId`, not for foreign projects).
+ * Shared by create, PATCH and sync updates.
+ */
+export async function assertTaskWorkstream(repo, projectId, fields) {
+  if (fields.workstreamId === undefined || fields.workstreamId === null) return;
+  const ws = await repo.get('workstream', fields.workstreamId);
+  if (!ws || ws.projectId !== projectId) {
+    throw validation(`Unknown workstreamId for this project: ${fields.workstreamId}`, { field: 'workstreamId' });
   }
 }
 
@@ -348,6 +407,8 @@ export async function createEntity(repo, actor, kind, payload, options = {}) {
         && fields.reportedBy !== actor?.id && !canManageProjectWork(actor, parent, members)) {
       throw forbidden('Only project managers may report a roadblock on behalf of someone else');
     }
+    // E07: a task's workstream must belong to the task's own project.
+    if (kind === 'task') await assertTaskWorkstream(repo, parent.id, fields);
   }
 
   // Classification: only ADMIN may set it at create; anyone else gets the
@@ -449,6 +510,8 @@ export async function assertUpdateBusinessRules(repo, actor, kind, current, fiel
   assertEnums(def, fields);
   assertFieldRules(def, fields);
   await assertUserRefs(repo, def, fields);
+  // E07: a task may only be attached to a workstream of its own project.
+  if (kind === 'task') await assertTaskWorkstream(repo, current.projectId, fields);
   if (kind !== 'project') return;
 
   // Only ADMIN may change a project's classification (403 otherwise).
@@ -480,15 +543,25 @@ export async function recordLifecycleCorrection(repo, actor, kind, before, after
   });
 }
 
-/** Gate checks shared by PATCH and sync updates. Throws 423 typed errors. */
+/**
+ * Gate checks shared by PATCH and sync updates. Throws 423 typed errors.
+ * E07: FS dependency predecessors gate advancement exactly like the v1
+ * dependencyLock; SS/FF/SF never lock (scheduling-only).
+ */
 export async function runTaskGates(repo, kind, current, fields) {
   if (kind !== 'task') return;
   const newStatus = fields.status;
   if (!newStatus || newStatus === current.status) return;
+  const dependencies = (await repo.list('dependency', { projectId: current.projectId }))
+    .filter((d) => d.successorId === current.id);
+  const predecessorIds = new Set(
+    dependencies.filter((d) => d.type === 'FS').map((d) => d.predecessorId),
+  );
+  if (current.dependencyLock) predecessorIds.add(current.dependencyLock);
   const tasksById = {};
-  if (current.dependencyLock) {
-    tasksById[current.dependencyLock] = await repo.get('task', current.dependencyLock);
+  for (const id of predecessorIds) {
+    tasksById[id] = await repo.get('task', id);
   }
   const project = await repo.get('project', current.projectId);
-  assertCanAdvance(current, newStatus, tasksById, project);
+  assertCanAdvance(current, newStatus, tasksById, project, dependencies);
 }

@@ -61,6 +61,10 @@ export const gateRequestPending = (pendingRequestId) =>
   new ApiError(409, 'GATE_REQUEST_PENDING',
     'A gate request is already pending for this project', { pendingRequestId });
 
+/** E07: identical dependency edge (predecessor, successor, type) already exists. */
+export const duplicate = (message = 'Duplicate entry', detail = undefined) =>
+  new ApiError(409, 'DUPLICATE', message, detail);
+
 export const dependencyLocked = (detail = undefined) =>
   new ApiError(423, 'DEPENDENCY_LOCKED', 'Prerequisite task is not complete', detail);
 

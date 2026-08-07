@@ -12,6 +12,7 @@ import ProjectMembers from "@/components/ProjectMembers";
 import EditProjectButton from "@/components/EditProjectDialog";
 import ProjectProgress from "@/components/ProjectProgress";
 import Milestones from "@/components/Milestones";
+import Workstreams from "@/components/Workstreams";
 import { PageHeader } from "@/components/Headings";
 import LogRoadblockButton from "@/components/LogRoadblockButton";
 import {
@@ -26,7 +27,7 @@ import {
   SeverityBadge,
   TagChip,
 } from "@/components/Badges";
-import { PlusIcon, ScaleIcon } from "@/components/Icons";
+import { GanttIcon, PlusIcon, ScaleIcon } from "@/components/Icons";
 import { SkeletonBoard } from "@/components/Skeleton";
 import { divisionMeta, fmtDateTime, cn } from "@/lib/utils";
 import type { RoadblockStatus } from "@/lib/types";
@@ -102,6 +103,13 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             <div className="flex flex-wrap items-center gap-2">
               <EditProjectButton project={project} />
               <Link
+                href={`/projects/${project.id}/plan`}
+                className="flex min-h-[44px] items-center gap-1.5 rounded-xl border border-indigo-300 px-4 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-50 dark:border-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-950/40"
+              >
+                <GanttIcon className="h-4 w-4" />
+                Plan
+              </Link>
+              <Link
                 href={`/projects/${project.id}/governance`}
                 className="flex min-h-[44px] items-center gap-1.5 rounded-xl border border-indigo-300 px-4 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-50 dark:border-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-950/40"
               >
@@ -146,6 +154,8 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       </header>
 
       <Kanban projectId={project.id} />
+
+      <Workstreams project={project} />
 
       <Milestones project={project} />
 

@@ -10,4 +10,6 @@ export const TABLES = {
   member: 'project_members',
   milestone: 'milestones',
   gateRequest: 'gate_requests',
+  workstream: 'workstreams',
+  dependency: 'task_dependencies',
 };

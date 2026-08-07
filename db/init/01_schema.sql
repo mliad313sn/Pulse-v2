@@ -351,11 +351,37 @@ CREATE TRIGGER trg_approval_ledger_immutable
     FOR EACH ROW EXECUTE FUNCTION forbid_ledger_mutation();
 
 -- ----------------------------------------------------------------------------
+-- E07 — Workstreams (plan §17). Named streams of work inside a project;
+-- OCC-versioned like other collaborative entities. Writes: manage-level
+-- authority OR the workstream lead (service policy).
+-- ----------------------------------------------------------------------------
+CREATE TABLE workstreams (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id  UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title       TEXT NOT NULL,
+    description TEXT,
+    lead_id     UUID REFERENCES users(id),
+    start_date  DATE,
+    end_date    DATE,
+    status      TEXT NOT NULL DEFAULT 'NOT_STARTED'
+                CHECK (status IN ('NOT_STARTED', 'IN_PROGRESS', 'DONE', 'ON_HOLD')),
+    version     INTEGER NOT NULL DEFAULT 1,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_workstreams_project ON workstreams(project_id);
+CREATE INDEX idx_workstreams_lead ON workstreams(lead_id);
+
+-- ----------------------------------------------------------------------------
 -- Tasks — dependency_lock points at the prerequisite task (Infra <-> Ops handshake)
+-- E07 additions: workstream membership + scheduling fields (planned dates,
+-- estimated hours) feeding the Gantt/critical-path computation (plan §18/§20).
 -- ----------------------------------------------------------------------------
 CREATE TABLE tasks (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id      UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    workstream_id   UUID REFERENCES workstreams(id) ON DELETE SET NULL,
     title           TEXT NOT NULL,
     description     TEXT,
     division        TEXT REFERENCES divisions(code),
@@ -366,6 +392,9 @@ CREATE TABLE tasks (
     priority        TEXT NOT NULL DEFAULT 'normal'
                     CHECK (priority IN ('low', 'normal', 'high', 'critical')),
     dependency_lock UUID REFERENCES tasks(id),          -- prerequisite task; NULL = unlocked
+    planned_start   DATE,
+    planned_finish  DATE,
+    estimated_hours DOUBLE PRECISION CHECK (estimated_hours >= 0),
     risk_tags       TEXT[] NOT NULL DEFAULT '{}',
     sla_due_at      TIMESTAMPTZ,
     version         INTEGER NOT NULL DEFAULT 1,
@@ -374,8 +403,81 @@ CREATE TABLE tasks (
 );
 
 CREATE INDEX idx_tasks_project ON tasks(project_id);
+CREATE INDEX idx_tasks_workstream ON tasks(workstream_id);
 CREATE INDEX idx_tasks_assignee ON tasks(assignee_id);
 CREATE INDEX idx_tasks_dependency ON tasks(dependency_lock);
+
+-- The service refuses a task whose workstream belongs to another project; this
+-- trigger is the database backstop for the same rule.
+CREATE OR REPLACE FUNCTION enforce_task_workstream_project() RETURNS trigger AS $$
+BEGIN
+    IF NEW.workstream_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM workstreams w WHERE w.id = NEW.workstream_id AND w.project_id = NEW.project_id
+    ) THEN
+        RAISE EXCEPTION 'WORKSTREAM_PROJECT_MISMATCH: workstream % does not belong to project %',
+            NEW.workstream_id, NEW.project_id USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_task_workstream_project
+    BEFORE INSERT OR UPDATE OF workstream_id, project_id ON tasks
+    FOR EACH ROW EXECUTE FUNCTION enforce_task_workstream_project();
+
+-- ----------------------------------------------------------------------------
+-- E07 — Typed task dependencies (plan §20). Immutable rows (create/delete
+-- only, no OCC version). Semantics:
+--   * FS additionally LOCKS the successor (it cannot advance while the
+--     predecessor is not done) — see enforce_task_gates below;
+--   * SS/FF/SF are scheduling-only edges (critical path), they never lock.
+-- The dependency graph per project must stay ACYCLIC across ALL edge types —
+-- the service runs a DFS before insert; the recursive trigger is the backstop.
+-- ----------------------------------------------------------------------------
+CREATE TABLE task_dependencies (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id     UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    predecessor_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    successor_id   UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    type           TEXT NOT NULL DEFAULT 'FS' CHECK (type IN ('FS', 'SS', 'FF', 'SF')),
+    lag_days       INTEGER NOT NULL DEFAULT 0,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT chk_dependency_no_self CHECK (predecessor_id <> successor_id),
+    CONSTRAINT uniq_dependency_edge UNIQUE (predecessor_id, successor_id, type)
+);
+
+CREATE INDEX idx_task_dependencies_project ON task_dependencies(project_id);
+CREATE INDEX idx_task_dependencies_successor ON task_dependencies(successor_id);
+
+-- Backstops for the service rules: both tasks share the row's project, and the
+-- new edge may not close a cycle (any dependency type participates).
+CREATE OR REPLACE FUNCTION enforce_dependency_rules() RETURNS trigger AS $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = NEW.predecessor_id AND t.project_id = NEW.project_id)
+       OR NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = NEW.successor_id AND t.project_id = NEW.project_id) THEN
+        RAISE EXCEPTION 'DEPENDENCY_PROJECT_MISMATCH: both tasks must belong to project %', NEW.project_id
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF EXISTS (
+        WITH RECURSIVE reach(task_id) AS (
+            SELECT NEW.successor_id
+            UNION
+            SELECT d.successor_id
+              FROM task_dependencies d
+              JOIN reach r ON d.predecessor_id = r.task_id
+        )
+        SELECT 1 FROM reach WHERE task_id = NEW.predecessor_id
+    ) THEN
+        RAISE EXCEPTION 'DEPENDENCY_CYCLE: edge % -> % would close a dependency cycle',
+            NEW.predecessor_id, NEW.successor_id USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_dependency_rules
+    BEFORE INSERT OR UPDATE ON task_dependencies
+    FOR EACH ROW EXECUTE FUNCTION enforce_dependency_rules();
 
 -- ----------------------------------------------------------------------------
 -- Roadblocks — 1-click field logging from site operators
@@ -496,6 +598,10 @@ CREATE TRIGGER trg_audit_milestones AFTER INSERT OR UPDATE OR DELETE ON mileston
     FOR EACH ROW EXECUTE FUNCTION write_audit_log();
 CREATE TRIGGER trg_audit_gate_requests AFTER INSERT OR UPDATE OR DELETE ON gate_requests
     FOR EACH ROW EXECUTE FUNCTION write_audit_log();
+CREATE TRIGGER trg_audit_workstreams AFTER INSERT OR UPDATE OR DELETE ON workstreams
+    FOR EACH ROW EXECUTE FUNCTION write_audit_log();
+CREATE TRIGGER trg_audit_task_dependencies AFTER INSERT OR UPDATE OR DELETE ON task_dependencies
+    FOR EACH ROW EXECUTE FUNCTION write_audit_log();
 -- approval_ledger is itself a governance record (like audit_logs) — not audited.
 
 -- ----------------------------------------------------------------------------
@@ -548,7 +654,10 @@ CREATE TRIGGER trg_route_security_tasks
 
 -- ----------------------------------------------------------------------------
 -- GOVERNANCE: hard gates on task progression
---   1. Dependency lock: a task cannot advance while its prerequisite is not done.
+--   1. Dependency lock (v1 single-prereq): a task cannot advance while its
+--      prerequisite is not done.
+--   1b. E07 typed dependencies: an FS predecessor that is not done locks the
+--       successor the same way. SS/FF/SF never lock (scheduling-only).
 --   2. Security gate: no task advances while the project awaits InfoSec approval.
 -- (The API mirrors these checks to give friendly errors; the DB is the backstop.)
 -- ----------------------------------------------------------------------------
@@ -556,6 +665,7 @@ CREATE OR REPLACE FUNCTION enforce_task_gates() RETURNS trigger AS $$
 DECLARE
     v_dep_status  TEXT;
     v_gate_status TEXT;
+    v_fs_blocker  UUID;
 BEGIN
     IF NEW.status IN ('in_progress', 'done') AND NEW.status IS DISTINCT FROM OLD.status THEN
         IF NEW.dependency_lock IS NOT NULL THEN
@@ -564,6 +674,15 @@ BEGIN
                 RAISE EXCEPTION 'DEPENDENCY_LOCKED: prerequisite task % is not complete', NEW.dependency_lock
                     USING ERRCODE = 'check_violation';
             END IF;
+        END IF;
+        SELECT d.predecessor_id INTO v_fs_blocker
+          FROM task_dependencies d
+          JOIN tasks p ON p.id = d.predecessor_id
+         WHERE d.successor_id = NEW.id AND d.type = 'FS' AND p.status <> 'done'
+         LIMIT 1;
+        IF v_fs_blocker IS NOT NULL THEN
+            RAISE EXCEPTION 'DEPENDENCY_LOCKED: FS predecessor task % is not complete', v_fs_blocker
+                USING ERRCODE = 'check_violation';
         END IF;
         SELECT security_gate_status INTO v_gate_status FROM projects WHERE id = NEW.project_id;
         IF v_gate_status = 'pending' THEN

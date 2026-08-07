@@ -10,6 +10,7 @@ import {
   SEVERITY_META,
   STATUS_META,
   titleCaseTag,
+  WORKSTREAM_STATUS_META,
 } from "@/lib/utils";
 import type {
   GateDecision,
@@ -22,6 +23,7 @@ import type {
   RoadblockSeverity,
   SecurityGateStatus,
   TaskStatus,
+  WorkstreamStatus,
 } from "@/lib/types";
 import { EyeOffIcon, FlagIcon, LockIcon, ScaleIcon, ShieldCheckIcon, ShieldIcon } from "./Icons";
 
@@ -212,6 +214,16 @@ export function MilestoneTypeBadge({ type }: { type: MilestoneType }) {
 
 export function MilestoneStatusBadge({ status }: { status: MilestoneStatus }) {
   const meta = MILESTONE_STATUS_META[status] ?? MILESTONE_STATUS_META.NOT_STARTED;
+  return (
+    <Pill className={cn("gap-1.5", meta.badge)}>
+      <span className={cn("h-1.5 w-1.5 rounded-full", meta.dot)} />
+      {meta.label}
+    </Pill>
+  );
+}
+
+export function WorkstreamStatusBadge({ status }: { status: WorkstreamStatus }) {
+  const meta = WORKSTREAM_STATUS_META[status] ?? WORKSTREAM_STATUS_META.NOT_STARTED;
   return (
     <Pill className={cn("gap-1.5", meta.badge)}>
       <span className={cn("h-1.5 w-1.5 rounded-full", meta.dot)} />

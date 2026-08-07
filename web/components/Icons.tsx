@@ -230,6 +230,25 @@ export function PencilIcon({ className }: IconProps) {
   );
 }
 
+export function DotsIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+export function GanttIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="M4 6.5h8M8 12h9M6 17.5h7" />
+      <path d="M4 3v18" opacity="0.4" />
+    </svg>
+  );
+}
+
 export function MergeIcon({ className }: IconProps) {
   return (
     <svg {...base(className)}>
